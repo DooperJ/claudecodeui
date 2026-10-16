@@ -378,3 +378,7 @@ alongside the implementation.
 - Assuming one provider's MCP config file format works for the others.
 
 
+
+## Model catalog sync
+
+`provider_models` holds three kinds of rows: `manual` (user-created), `synced` (discovered from the provider's own runtime) and, in code only, the built-in fallback lists. `provider-model-sync.service.ts` queries Claude (Agent SDK `supportedModels()`, no persisted session) and Codex (`codex app-server` `model/list`), writes the result in one transaction, and records status in `provider_model_sync_state`. Failed or empty queries never change the stored catalog. A sync runs on first sign-in, when the CLI/SDK version or the signed-in account changes (checked on server start and on `GET /:provider/auth/status`), and on `POST /:provider/models/sync`. Synced models replace the built-in fallback in the merged catalog; manual models always follow them.

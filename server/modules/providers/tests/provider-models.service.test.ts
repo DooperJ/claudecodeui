@@ -122,7 +122,18 @@ const createSettingsStore = () => {
   };
 };
 
+/** In-memory stand-in for the synced-catalog reads; empty unless a test fills `rows`. */
+const createSyncedStore = () => {
+  const rows = new Map<LLMProvider, CustomProviderModelRecord[]>();
+  return {
+    rows,
+    listAvailableSyncedProviderModels: (provider: LLMProvider) => [...(rows.get(provider) ?? [])],
+    getProviderModelSyncState: () => null,
+  };
+};
+
 const createTestService = (options: {
+  synced?: ReturnType<typeof createSyncedStore>;
   catalog?: ReturnType<typeof createCatalogStore>;
   sessions?: ReturnType<typeof createSessionStore>;
   settings?: ReturnType<typeof createSettingsStore>;
@@ -132,8 +143,11 @@ const createTestService = (options: {
   const catalog = options.catalog ?? createCatalogStore();
   const sessions = options.sessions ?? createSessionStore();
   const settings = options.settings ?? createSettingsStore();
+  const synced = options.synced ?? createSyncedStore();
   const service = createProviderModelsService({
     catalog,
+    synced,
+    syncStatus: { isSyncSupported: () => false, getState: () => { throw new Error('unsupported'); } },
     sessions,
     settings,
     resolveProvider: (provider) => ({
@@ -164,6 +178,7 @@ test('provider catalogs merge source-controlled defaults with custom persistence
     value: 'codex-default',
     label: 'codex-default',
     isCustom: false,
+    origin: 'builtin',
   });
   assert.deepEqual(catalog.rows.get('codex'), undefined);
 });
@@ -584,4 +599,82 @@ test('resolveResumeModel never consults provider-global state', async () => {
 
   assert.equal(model, 'gpt-5.5');
   assert.equal(providerLookups, 0);
+});
+
+const syncedRecord = (
+  recordId: number,
+  modelId: string,
+  effort: CustomProviderModelRecord['effort'] = null,
+): CustomProviderModelRecord => ({
+  recordId,
+  provider: 'codex',
+  modelId,
+  model: modelId.toUpperCase(),
+  sortOrder: recordId,
+  effort,
+  description: `${modelId} description`,
+});
+
+test('synced models replace the built-in fallback and keep manual models after them', async () => {
+  const synced = createSyncedStore();
+  synced.rows.set('codex', [
+    syncedRecord(1, 'real-a', { values: ['low', 'high'], default: 'low' }),
+    syncedRecord(2, 'real-b'),
+  ]);
+  const { service } = createTestService({ synced });
+  await service.createCustomModel('codex', { id: 'mine', model: 'Mine' });
+
+  const models = await service.getProviderModels('codex');
+
+  assert.deepEqual(models.OPTIONS.map((option) => [option.value, option.origin]), [
+    ['real-a', 'synced'],
+    ['real-b', 'synced'],
+    ['mine', 'manual'],
+  ]);
+  assert.equal(models.DEFAULT, 'real-a');
+  assert.deepEqual(models.OPTIONS[0].effort, {
+    default: 'low',
+    values: [{ value: 'low' }, { value: 'high' }],
+  });
+  assert.equal(models.OPTIONS[0].description, 'real-a description');
+  assert.equal(models.OPTIONS[1].effort, undefined);
+});
+
+test('a manual model cannot reuse the id of a synced model', async () => {
+  const synced = createSyncedStore();
+  synced.rows.set('codex', [syncedRecord(1, 'real-a')]);
+  const { service } = createTestService({ synced });
+
+  await assert.rejects(
+    service.createCustomModel('codex', { id: 'real-a', model: 'Dup' }),
+    (error: unknown) => error instanceof AppError && error.code === 'MODEL_ID_ALREADY_EXISTS',
+  );
+});
+
+test('catalogs of syncable providers expose their sync state', async () => {
+  const state = {
+    status: 'success' as const,
+    lastAttemptAt: null,
+    lastSuccessAt: '2026-01-01T00:00:00.000Z',
+    error: null,
+    cliVersion: '1.0.0',
+    sdkVersion: '1.0.0',
+    modelCount: 2,
+  };
+  const service = createProviderModelsService({
+    catalog: createCatalogStore(),
+    synced: createSyncedStore(),
+    syncStatus: { isSyncSupported: (provider) => provider === 'codex', getState: () => state },
+    sessions: createSessionStore(),
+    settings: createSettingsStore(),
+    resolveProvider: (provider) => ({
+      models: {
+        getSupportedModels: async () => createModels(`${provider}-default`),
+        getCurrentActiveModel: async () => createCurrentActiveModel('x'),
+      },
+    }),
+  });
+
+  assert.deepEqual((await service.getProviderModels('codex')).SYNC, state);
+  assert.equal((await service.getProviderModels('claude')).SYNC, undefined);
 });

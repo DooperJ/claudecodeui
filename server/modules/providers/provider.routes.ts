@@ -4,6 +4,7 @@ import { providerAuthService } from '@/modules/providers/services/provider-auth.
 import { claudeSettingsPermissionsService } from '@/modules/providers/services/claude-settings-permissions.service.js';
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
+import { providerModelSyncService } from '@/modules/providers/services/provider-model-sync.service.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { providerTokenUsageService } from '@/modules/providers/services/provider-token-usage.service.js';
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
@@ -628,6 +629,10 @@ router.get(
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
     const status = await providerAuthService.getProviderAuthStatus(provider);
+    // The settings UI re-reads this after sign-in and re-login, so a signed-in
+    // provider whose catalog was never synced (or belongs to another account
+    // or CLI/SDK version) starts a background sync here without blocking.
+    void providerModelSyncService.syncIfStale(provider, status);
     res.json(createApiSuccessResponse(status));
   }),
 );
@@ -636,6 +641,21 @@ router.get(
   '/:provider/models',
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
+    const models = await providerModelsService.getProviderModels(provider);
+    res.json(createApiSuccessResponse({ provider, models }));
+  }),
+);
+
+/**
+ * Re-queries the provider's own runtime for its model catalog and returns the
+ * resulting catalog. A failed query answers 200 with `models.SYNC.status`
+ * `error` and the previous catalog untouched, so the UI can show the reason.
+ */
+router.post(
+  '/:provider/models/sync',
+  asyncHandler(async (req: Request, res: Response) => {
+    const provider = parseProvider(req.params.provider);
+    await providerModelSyncService.syncProvider(provider);
     const models = await providerModelsService.getProviderModels(provider);
     res.json(createApiSuccessResponse({ provider, models }));
   }),

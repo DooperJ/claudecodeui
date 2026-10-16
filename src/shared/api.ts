@@ -427,6 +427,7 @@ export const api = {
       patch(`/api/providers/${provider}/models/${recordId}`, input),
     deleteModel: (provider: string, recordId: string | number) =>
       del(`/api/providers/${provider}/models/${recordId}`),
+    syncModels: (provider: string) => post(`/api/providers/${provider}/models/sync`, {}),
     setCustomModelsOnly: (provider: string, enabled: boolean) =>
       put(`/api/providers/${provider}/models/custom-only`, { enabled }),
 

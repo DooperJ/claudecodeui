@@ -1,15 +1,25 @@
 import { readFile } from 'node:fs/promises';
+import os from 'node:os';
+
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import spawn from 'cross-spawn';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import type { IProviderModels } from '@/shared/interfaces.js';
 import type {
+  DiscoveredProviderModel,
   ProviderCurrentActiveModel,
+  ProviderModelDiscovery,
   ProviderModelOption,
   ProviderModelsDefinition,
 } from '@/shared/types.js';
 import {
+  AppError,
   buildDefaultProviderCurrentActiveModel,
   isPlaceholderProviderModel,
+  readInstalledPackageVersion,
+  readOptionalString,
   stripAnsiSequences,
 } from '@/shared/utils.js';
 
@@ -171,6 +181,131 @@ export const findClaudeModelOption = (model: string | undefined | null): Provide
 
   return CLAUDE_PREDEFINED_MODELS.OPTIONS.find((option) => option.value === normalizedModel) ?? null;
 };
+/** How long the catalog query may take before the Claude subprocess is closed. */
+const CLAUDE_MODEL_DISCOVERY_TIMEOUT_MS = 60_000;
+
+/**
+ * One `supportedModels()` entry. `resolvedModel` is only present on newer SDKs,
+ * so it is read defensively; every field is untrusted runtime output.
+ */
+type ClaudeListedModel = {
+  value?: unknown;
+  displayName?: unknown;
+  description?: unknown;
+  resolvedModel?: unknown;
+  supportedEffortLevels?: unknown;
+};
+
+/**
+ * Collapses aliases of one real model into a single discovered model.
+ *
+ * Entries sharing a `resolvedModel` (for example `default` and `sonnet`) become
+ * one row whose id is that real model. Without `resolvedModel` the alias value
+ * is the id. The row is named after a non-`default` alias when there is one,
+ * and its effort levels are those the runtime reported; `ultracode` is added
+ * only where `xhigh` is reported, matching how the runtime expands it. The
+ * runtime's `default` entry decides the catalog default. Exported for tests.
+ */
+export function normalizeClaudeListedModels(listed: ClaudeListedModel[]): {
+  models: DiscoveredProviderModel[];
+  defaultModelId?: string;
+} {
+  const groups = new Map<string, ClaudeListedModel[]>();
+  const idByAlias = new Map<string, string>();
+  for (const entry of listed) {
+    const value = readOptionalString(entry.value);
+    if (!value) {
+      continue;
+    }
+    const id = readOptionalString(entry.resolvedModel) ?? value;
+    idByAlias.set(value, id);
+    groups.set(id, [...(groups.get(id) ?? []), entry]);
+  }
+
+  const models: DiscoveredProviderModel[] = [];
+  for (const [id, entries] of groups) {
+    const preferred = entries.find((entry) => entry.value !== 'default') ?? entries[0];
+    const withEffort = entries.find((entry) => (
+      Array.isArray(entry.supportedEffortLevels) && entry.supportedEffortLevels.length > 0
+    ));
+    const effort = Array.isArray(withEffort?.supportedEffortLevels)
+      ? withEffort.supportedEffortLevels.filter((level): level is string => typeof level === 'string')
+      : [];
+    if (effort.includes('xhigh')) {
+      effort.push(CLAUDE_ULTRACODE_EFFORT);
+    }
+
+    models.push({
+      id,
+      name: readOptionalString(preferred.displayName) ?? id,
+      ...(readOptionalString(preferred.description)
+        ? { description: readOptionalString(preferred.description) }
+        : {}),
+      effort,
+    });
+  }
+
+  const defaultModelId = idByAlias.get('default');
+  return { models, ...(defaultModelId ? { defaultModelId } : {}) };
+}
+
+/**
+ * Asks the real Claude Code subprocess for its model list without running a
+ * turn. The prompt stream never yields, so no request reaches the API, and
+ * `persistSession: false` plus a neutral `cwd` keep the query from writing a
+ * transcript that would show up as a project or session.
+ */
+async function queryClaudeSupportedModels(): Promise<ClaudeListedModel[]> {
+  const abortController = new AbortController();
+  // An async iterable whose first read waits until the query is aborted, then ends.
+  const neverPrompt: AsyncIterable<never> = {
+    [Symbol.asyncIterator]: () => ({
+      next: () => new Promise<IteratorResult<never>>((resolve) => {
+        abortController.signal.addEventListener(
+          'abort',
+          () => resolve({ done: true, value: undefined }),
+          { once: true },
+        );
+      }),
+    }),
+  };
+
+  const cliPath = resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH);
+  const claudeQuery = query({
+    prompt: neverPrompt,
+    options: {
+      abortController,
+      persistSession: false,
+      cwd: os.tmpdir(),
+      env: { ...process.env },
+      // User settings carry gateway/env configuration that decides which
+      // models the account is offered; project and local ones do not.
+      settingSources: ['user'],
+      ...(cliPath ? { pathToClaudeCodeExecutable: cliPath } : {}),
+    },
+  });
+
+  const timer = setTimeout(() => abortController.abort(), CLAUDE_MODEL_DISCOVERY_TIMEOUT_MS);
+  try {
+    const supported = await Promise.race([
+      claudeQuery.supportedModels(),
+      new Promise<never>((_, reject) => {
+        abortController.signal.addEventListener('abort', () => {
+          reject(new AppError('Claude did not return its model list in time.', {
+            code: 'MODEL_DISCOVERY_TIMEOUT',
+            statusCode: 504,
+          }));
+        }, { once: true });
+      }),
+    ]);
+    return supported as ClaudeListedModel[];
+  } finally {
+    clearTimeout(timer);
+    claudeQuery.close();
+    abortController.abort();
+  }
+}
+
 type ClaudeInitEvent = {
   sessionId?: string;
   session_id?: string;
@@ -278,18 +413,39 @@ const readClaudeSessionModelFromJsonl = async (
 
 export class ClaudeProviderModels implements IProviderModels {
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
-    // claude creates a new jsonl file as a separate session for this request.
-    // As a result, it lists the workspace where this is invoked when it shouldn't.
-    //
-    // Disabled for now:
-    // const queryInstance = query({
-    //   prompt: 'Get supported models',
-    //   options: buildClaudeQueryOptions(),
-    // });
-    // const supportedModels = await queryInstance.supportedModels();
-    // queryInstance.close();
-    // return buildClaudeModelsDefinition(supportedModels);
+    // Source-controlled fallback. The real catalog comes from `discoverModels`
+    // (persistence-free, so it creates no jsonl session) via the model sync.
     return CLAUDE_PREDEFINED_MODELS;
+  }
+
+  async readRuntimeVersions(): Promise<{ cliVersion: string | null; sdkVersion: string | null }> {
+    // The CLI is the executable the runtime hands the SDK (CLAUDE_CLI_PATH or
+    // `claude` on PATH), not whatever else is installed on the machine.
+    const cliPath = resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH) ?? 'claude';
+    let cliVersion: string | null = null;
+    try {
+      const result = spawn.sync(cliPath, ['--version'], { encoding: 'utf8', timeout: 5000 });
+      cliVersion = /\d+\.\d+\.\d+\S*/.exec(String(result.stdout ?? ''))?.[0] ?? null;
+    } catch {
+      cliVersion = null;
+    }
+
+    return {
+      cliVersion,
+      sdkVersion: readInstalledPackageVersion('@anthropic-ai/claude-agent-sdk'),
+    };
+  }
+
+  async discoverModels(): Promise<ProviderModelDiscovery> {
+    const { models, defaultModelId } = normalizeClaudeListedModels(await queryClaudeSupportedModels());
+    if (models.length === 0) {
+      throw new AppError('Claude reported no selectable models.', {
+        code: 'MODEL_DISCOVERY_EMPTY',
+        statusCode: 502,
+      });
+    }
+
+    return { models, defaultModelId, ...(await this.readRuntimeVersions()) };
   }
 
   async getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel> {

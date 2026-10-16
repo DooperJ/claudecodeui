@@ -39,6 +39,9 @@ test('provider model repository stores custom rows only and maintains session re
       'updated_at',
       'effort_values',
       'effort_default',
+      'source',
+      'is_available',
+      'description',
     ]);
     assert.deepEqual(providerModelsDb.listCustomProviderModels('codex'), []);
 
@@ -217,7 +220,13 @@ test('migrations add effort columns to an existing provider model table and keep
     const columnNames = (getConnection().prepare('PRAGMA table_info(provider_models)').all() as Array<{
       name: string;
     }>).map((column) => column.name);
-    assert.deepEqual(columnNames.slice(-2), ['effort_values', 'effort_default']);
+    assert.deepEqual(columnNames.slice(-5), [
+      'effort_values',
+      'effort_default',
+      'source',
+      'is_available',
+      'description',
+    ]);
 
     const [legacy] = providerModelsDb.listCustomProviderModels('codex');
     assert.equal(legacy?.modelId, 'legacy-model');
@@ -226,6 +235,63 @@ test('migrations add effort columns to an existing provider model table and keep
     // Running the migrations again is a no-op.
     runMigrations(getConnection());
     assert.equal(providerModelsDb.listCustomProviderModels('codex')[0]?.effort, null);
+  } finally {
+    closeConnection();
+    if (previousDatabasePath === undefined) {
+      delete process.env.DATABASE_PATH;
+    } else {
+      process.env.DATABASE_PATH = previousDatabasePath;
+    }
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test('synced rows are replaced in place, retired when unreported, and never touch manual rows or sessions', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'provider-model-sync-db-'));
+  const databasePath = path.join(tempDirectory, 'auth.db');
+
+  closeConnection();
+  process.env.DATABASE_PATH = databasePath;
+  await writeFile(databasePath, '');
+  await initializeDatabase();
+
+  try {
+    const manual = providerModelsDb.createCustomProviderModel('codex', { id: 'mine', model: 'Mine' });
+    const discoveryOf = (ids: string[], extra: Partial<{ defaultModelId: string }> = {}) => ({
+      models: ids.map((id) => ({ id, name: `Name ${id}`, effort: ['low', 'high'], defaultEffort: 'low' })),
+      cliVersion: '1.0.0',
+      sdkVersion: '2.0.0',
+      ...extra,
+    });
+
+    providerModelsDb.replaceSyncedProviderModels('codex', discoveryOf(['a', 'b', 'mine'], { defaultModelId: 'b' }), 'id1');
+    let synced = providerModelsDb.listAvailableSyncedProviderModels('codex');
+    assert.deepEqual(synced.map((record) => record.modelId), ['a', 'b'], 'a reported id owned by a manual row is skipped');
+    assert.deepEqual(synced[0].effort, { values: ['low', 'high'], default: 'low' });
+    assert.equal(providerModelsDb.getProviderModelSyncState('codex')?.defaultModelId, 'b');
+
+    // The manual API only ever sees manual rows.
+    assert.deepEqual(providerModelsDb.listCustomProviderModels('codex').map((record) => record.modelId), ['mine']);
+    assert.equal(providerModelsDb.getCustomProviderModel('codex', synced[0].recordId), null);
+    assert.equal(providerModelsDb.deleteCustomProviderModel('codex', synced[0].recordId, 'x'), null);
+
+    providerModelsDb.replaceSyncedProviderModels('codex', discoveryOf(['b', 'c']), 'id1');
+    synced = providerModelsDb.listAvailableSyncedProviderModels('codex');
+    assert.deepEqual(synced.map((record) => record.modelId), ['b', 'c']);
+    const retired = getConnection()
+      .prepare("SELECT is_available FROM provider_models WHERE provider = 'codex' AND model_id = 'a'")
+      .get() as { is_available: number };
+    assert.equal(retired.is_available, 0, 'unreported rows are kept but unavailable');
+
+    providerModelsDb.recordProviderModelSyncFailure('codex', 'boom');
+    const failed = providerModelsDb.getProviderModelSyncState('codex');
+    assert.equal(failed?.status, 'error');
+    assert.equal(failed?.error, 'boom');
+    assert.ok(failed?.lastSuccessAt);
+    assert.equal(failed?.cliVersion, '1.0.0');
+    assert.equal(providerModelsDb.listAvailableSyncedProviderModels('codex').length, 2);
+    assert.equal(providerModelsDb.getCustomProviderModel('codex', manual.recordId)?.modelId, 'mine');
   } finally {
     closeConnection();
     if (previousDatabasePath === undefined) {

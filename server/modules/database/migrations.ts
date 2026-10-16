@@ -5,6 +5,7 @@ import {
   LAST_SCANNED_AT_SQL,
   NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL,
   PROJECTS_TABLE_SCHEMA_SQL,
+  PROVIDER_MODEL_SYNC_STATE_TABLE_SCHEMA_SQL,
   PROVIDER_MODELS_TABLE_SCHEMA_SQL,
   PUSH_SUBSCRIPTIONS_TABLE_SCHEMA_SQL,
   SESSION_DRAFTS_TABLE_SCHEMA_SQL,
@@ -470,6 +471,17 @@ const addProviderModelEffortColumns = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'provider_models', columnNames, 'effort_default', 'TEXT DEFAULT NULL');
 };
 
+/**
+ * Adds the sync columns to the model library. Existing rows were all created
+ * by users, so the `manual` default keeps them untouched by any later sync.
+ */
+const addProviderModelSyncColumns = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'provider_models').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'provider_models', columnNames, 'source', "TEXT NOT NULL DEFAULT 'manual'");
+  addColumnToTableIfNotExists(db, 'provider_models', columnNames, 'is_available', 'INTEGER NOT NULL DEFAULT 1');
+  addColumnToTableIfNotExists(db, 'provider_models', columnNames, 'description', 'TEXT DEFAULT NULL');
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -518,6 +530,8 @@ export const runMigrations = (db: Database) => {
       ON provider_models(provider, sort_order, id)
     `);
     addProviderModelEffortColumns(db);
+    addProviderModelSyncColumns(db);
+    db.exec(PROVIDER_MODEL_SYNC_STATE_TABLE_SCHEMA_SQL);
     db.exec(USER_PREFERENCES_TABLE_SCHEMA_SQL);
     db.exec(SESSION_DRAFTS_TABLE_SCHEMA_SQL);
     db.exec(SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL);

@@ -11,6 +11,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -1353,4 +1354,54 @@ export function findApplicationRoot(startDirectory: string): string {
   return path.basename(parentDirectory) === 'dist-server'
     ? path.dirname(parentDirectory)
     : parentDirectory;
+}
+
+// ---------------------------
+//----------------- INSTALLED PACKAGE VERSION UTILITIES ------------
+/** Resolves a package entry point the way either module system would load it. */
+function resolvePackageEntryPoint(packageName: string): string {
+  try {
+    // ESM-only packages (no `require` export condition) only resolve this way.
+    return fileURLToPath(import.meta.resolve(packageName));
+  } catch {
+    return createRequire(import.meta.url).resolve(packageName);
+  }
+}
+
+/**
+ * Reads the version of the copy of an npm package this server would actually
+ * load, by resolving the package entry point from the server's own module location and
+ * walking up to the `package.json` that names it.
+ *
+ * Used by the Claude and Codex model adapters to identify the SDK/CLI that
+ * answers a catalog query. It resolves the package entry point instead of
+ * `package.json` because many packages restrict `exports`; `entrySpecifier`
+ * names a file inside the package for those that export no entry point (a
+ * bin-only package). Returns `null` when
+ * the package is not installed or its manifest cannot be read, never throws.
+ */
+export function readInstalledPackageVersion(
+  packageName: string,
+  entrySpecifier: string = packageName,
+): string | null {
+  try {
+    const entryPoint = resolvePackageEntryPoint(entrySpecifier);
+    let directory = path.dirname(entryPoint);
+    for (;;) {
+      const manifestPath = path.join(directory, 'package.json');
+      if (fs.existsSync(manifestPath)) {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as AnyRecord;
+        if (manifest.name === packageName) {
+          return typeof manifest.version === 'string' ? manifest.version : null;
+        }
+      }
+      const parent = path.dirname(directory);
+      if (parent === directory) {
+        return null;
+      }
+      directory = parent;
+    }
+  } catch {
+    return null;
+  }
 }

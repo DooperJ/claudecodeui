@@ -191,7 +191,61 @@ async function withAppServer<T>(
   }
 }
 
+/**
+ * One entry of `model/list`, reduced to the fields catalog sync reads. Every
+ * field is optional because the payload is untrusted protocol output.
+ */
+export type CodexListedModel = {
+  id?: unknown;
+  model?: unknown;
+  displayName?: unknown;
+  description?: unknown;
+  hidden?: unknown;
+  isDefault?: unknown;
+  defaultReasoningEffort?: unknown;
+  supportedReasoningEfforts?: unknown;
+};
+
+/** Upper bound on `model/list` pages, so a server that never ends the cursor cannot spin forever. */
+const MODEL_LIST_MAX_PAGES = 20;
+
 export const codexAppServer = {
+  /**
+   * Lists the models the Codex runtime offers this account, following the
+   * pagination cursor. Hidden (internal) models are excluded by the server
+   * request and filtered again by the caller. Read-only: no thread is started.
+   */
+  async listModels(): Promise<CodexListedModel[]> {
+    return withAppServer(async (call) => {
+      const models: CodexListedModel[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < MODEL_LIST_MAX_PAGES; page += 1) {
+        const result = await call('model/list', {
+          includeHidden: false,
+          ...(cursor ? { cursor } : {}),
+        }) as { data?: unknown; nextCursor?: unknown } | undefined;
+
+        if (!Array.isArray(result?.data)) {
+          throw new AppError('Codex app-server returned a model list without data.', {
+            code: 'CODEX_APP_SERVER_ERROR',
+            statusCode: 502,
+          });
+        }
+        models.push(...(result.data as CodexListedModel[]));
+
+        cursor = typeof result?.nextCursor === 'string' && result.nextCursor ? result.nextCursor : null;
+        if (!cursor) {
+          return models;
+        }
+      }
+
+      throw new AppError('Codex app-server model list did not finish paging.', {
+        code: 'CODEX_APP_SERVER_ERROR',
+        statusCode: 502,
+      });
+    });
+  },
+
   /**
    * Copies a thread into a new one that ends at `lastTurnId`, or copies the
    * whole thread when it is omitted.

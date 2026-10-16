@@ -102,6 +102,8 @@ const createActions = (setCustomModelsOnly: ProviderModelActions['setCustomModel
   update: async () => {},
   remove: async () => {},
   setCustomModelsOnly,
+  sync: async () => {},
+  refresh: async () => {},
 }) satisfies ProviderModelActions;
 
 beforeEach(() => {

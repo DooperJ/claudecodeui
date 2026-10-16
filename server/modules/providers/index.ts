@@ -6,6 +6,9 @@ export { providerRuntimeService } from './services/provider-runtime.service.js';
 // providerModelsService: used by Commands to list models and resolve the active session model.
 export { providerModelsService } from './services/provider-models.service.js';
 
+// providerModelSyncService: used by server startup to sync stale provider model catalogs.
+export { providerModelSyncService } from './services/provider-model-sync.service.js';
+
 // sessionsService: used by the websocket module's chat gateway to resolve an
 // edited message's resume point, which only the providers module can read.
 export { sessionsService } from './services/sessions.service.js';

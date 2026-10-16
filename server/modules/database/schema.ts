@@ -191,7 +191,34 @@ CREATE TABLE IF NOT EXISTS provider_models (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     effort_values TEXT DEFAULT NULL,
     effort_default TEXT DEFAULT NULL,
+    source TEXT NOT NULL DEFAULT 'manual',
+    is_available INTEGER NOT NULL DEFAULT 1,
+    description TEXT DEFAULT NULL,
     UNIQUE(provider, model_id)
+);
+`;
+
+/**
+ * Per-provider state of the model catalog sync.
+ *
+ * One row per provider that supports discovery. `auth_identity` records the
+ * account the last attempt ran under so a re-login can trigger a fresh sync;
+ * `default_model_id` is the runtime-reported default among the synced rows.
+ * Failures update `error` and `last_attempt_at` only, so the last good catalog
+ * and `last_success_at` survive.
+ */
+export const PROVIDER_MODEL_SYNC_STATE_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS provider_model_sync_state (
+    provider TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'never',
+    last_attempt_at DATETIME DEFAULT NULL,
+    last_success_at DATETIME DEFAULT NULL,
+    error TEXT DEFAULT NULL,
+    cli_version TEXT DEFAULT NULL,
+    sdk_version TEXT DEFAULT NULL,
+    auth_identity TEXT DEFAULT NULL,
+    default_model_id TEXT DEFAULT NULL,
+    model_count INTEGER NOT NULL DEFAULT 0
 );
 `;
 
@@ -304,6 +331,8 @@ ${APP_CONFIG_TABLE_SCHEMA_SQL}
 ${PROVIDER_MODELS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_provider_models_provider_order
 ON provider_models(provider, sort_order, id);
+
+${PROVIDER_MODEL_SYNC_STATE_TABLE_SCHEMA_SQL}
 
 ${USER_PREFERENCES_TABLE_SCHEMA_SQL}
 

@@ -1,6 +1,7 @@
 import { appConfigDb, providerModelsDb, sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
+import { providerModelSyncService } from '@/modules/providers/services/provider-model-sync.service.js';
 import type { IProvider } from '@/shared/interfaces.js';
 import type {
   CustomProviderModelInput,
@@ -9,6 +10,7 @@ import type {
   ProviderCurrentActiveModel,
   ProviderModelOption,
   ProviderModelsDefinition,
+  ProviderModelSyncState,
   ProviderSessionModel,
 } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
@@ -31,12 +33,23 @@ type ProviderModelsCatalogStore = Pick<
   | 'deleteCustomProviderModel'
 >;
 
+/** Synced-catalog reads the service needs, narrowed so tests can stub them. */
+type ProviderModelsSyncedStore = Pick<
+  typeof providerModelsDb,
+  'listAvailableSyncedProviderModels' | 'getProviderModelSyncState'
+>;
+
+/** Sync status lookup, narrowed from the sync service for the same reason. */
+type ProviderModelsSyncStatus = Pick<typeof providerModelSyncService, 'isSyncSupported' | 'getState'>;
+
 /** App-wide key-value settings, narrowed to what the "custom models only" flag needs. */
 type ProviderModelsSettingsStore = Pick<typeof appConfigDb, 'get' | 'set'>;
 
 type ProviderModelsServiceDependencies = {
   resolveProvider?: (provider: LLMProvider) => Pick<IProvider, 'models'>;
   catalog?: ProviderModelsCatalogStore;
+  synced?: ProviderModelsSyncedStore;
+  syncStatus?: ProviderModelsSyncStatus;
   sessions?: ProviderModelsSessionStore;
   settings?: ProviderModelsSettingsStore;
 };
@@ -65,6 +78,31 @@ const toCustomProviderModelOption = (
   label: record.model,
   recordId: record.recordId,
   isCustom: true,
+  origin: 'manual',
+  ...(record.effort
+    ? {
+      effort: {
+        ...(record.effort.default ? { default: record.effort.default } : {}),
+        values: record.effort.values.map((value) => ({ value })),
+      },
+    }
+    : {}),
+});
+
+/**
+ * Converts a model discovered from the provider runtime into a catalog option.
+ *
+ * Shaped like a built-in model (`isCustom: false`, no `recordId`) so it is not
+ * editable in the library, with the runtime's own effort levels and default.
+ */
+const toSyncedProviderModelOption = (
+  record: CustomProviderModelRecord,
+): ProviderModelOption => ({
+  value: record.modelId,
+  label: record.model,
+  ...(record.description ? { description: record.description } : {}),
+  isCustom: false,
+  origin: 'synced',
   ...(record.effort
     ? {
       effort: {
@@ -92,31 +130,44 @@ const readCustomModelEffortLevels = (provider: LLMProvider): string[] => (
 /**
  * Builds the catalog every picker, command, and runtime reads.
  *
- * Built-in models come first, then custom ones. With `customModelsOnly` set the
- * built-ins are left out and the first custom model becomes the default, so a
- * provider pointed at a gateway lists only what that gateway serves. The flag
- * only applies while at least one custom model exists: an empty catalog would
- * leave the composer and the runtimes with no model at all.
+ * The base list is the models synced from the provider's own runtime when at
+ * least one is available, otherwise the source-controlled fallback. Manual
+ * models follow it. With `customModelsOnly` set the base list is left out and
+ * the first manual model becomes the default, so a provider pointed at a
+ * gateway lists only what that gateway serves. The flag only applies while at
+ * least one manual model exists: an empty catalog would leave the composer and
+ * the runtimes with no model at all.
  */
 const mergeProviderModels = (
   provider: LLMProvider,
   predefined: ProviderModelsDefinition,
   custom: CustomProviderModelRecord[],
   customModelsOnly: boolean,
+  synced: { records: CustomProviderModelRecord[]; defaultModelId: string | null } = {
+    records: [],
+    defaultModelId: null,
+  },
+  sync?: ProviderModelSyncState,
 ): ProviderModelsDefinition => {
   const customOptions = custom.map(toCustomProviderModelOption);
   const listOnlyCustomModels = customModelsOnly && customOptions.length > 0;
+  const useSynced = synced.records.length > 0;
+  const baseOptions: ProviderModelOption[] = useSynced
+    ? synced.records.map(toSyncedProviderModelOption)
+    : predefined.OPTIONS.map((option) => ({ ...option, isCustom: false, origin: 'builtin' as const }));
+  const baseDefault = useSynced
+    ? (baseOptions.some((option) => option.value === synced.defaultModelId)
+      ? synced.defaultModelId as string
+      : baseOptions[0].value)
+    : predefined.DEFAULT;
+
   return {
-    OPTIONS: listOnlyCustomModels
-      ? customOptions
-      : [
-        ...predefined.OPTIONS.map((option) => ({ ...option, isCustom: false })),
-        ...customOptions,
-      ],
-    DEFAULT: listOnlyCustomModels ? customOptions[0].value : predefined.DEFAULT,
+    OPTIONS: listOnlyCustomModels ? customOptions : [...baseOptions, ...customOptions],
+    DEFAULT: listOnlyCustomModels ? customOptions[0].value : baseDefault,
     // Copied so no caller can mutate the shared capability matrix.
     EFFORT_LEVELS: [...readCustomModelEffortLevels(provider)],
     CUSTOM_MODELS_ONLY: customModelsOnly,
+    ...(sync ? { SYNC: sync } : {}),
   };
 };
 
@@ -167,14 +218,17 @@ const isUniqueConstraintError = (error: unknown): boolean => (
  * Creates the provider model application service used by Providers routes,
  * Commands, and provider runtimes.
  *
- * Curated adapter definitions stay source-controlled and are merged at read
- * time with custom SQLite rows. This deliberately has no predefined-model
- * persistence, memory cache, disk cache, TTL, or provider-native discovery.
- * Tests inject a small custom-model store through the same boundary.
+ * Models synced from the provider runtime (see the model sync service) and
+ * the user's manual rows are merged at read time; the curated, source-controlled
+ * adapter definitions are the fallback while nothing has been synced. This
+ * deliberately has no memory cache, disk cache, or TTL: SQLite is the cache.
+ * Tests inject small stores through the same boundary.
  */
 export const createProviderModelsService = (dependencies: ProviderModelsServiceDependencies = {}) => {
   const resolveProvider = dependencies.resolveProvider ?? providerRegistry.resolveProvider;
   const catalog = dependencies.catalog ?? providerModelsDb;
+  const synced = dependencies.synced ?? providerModelsDb;
+  const syncStatus = dependencies.syncStatus ?? providerModelSyncService;
   const sessions = dependencies.sessions ?? sessionsDb;
   const settings = dependencies.settings ?? appConfigDb;
 
@@ -182,15 +236,26 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     settings.get(customModelsOnlyConfigKey(provider)) === 'true'
   );
 
-  /** Merges the adapter catalog with the provider's stored custom rows and flag. */
+  const readSyncedModels = (provider: LLMProvider) => ({
+    records: synced.listAvailableSyncedProviderModels(provider),
+    defaultModelId: synced.getProviderModelSyncState(provider)?.defaultModelId ?? null,
+  });
+
+  /**
+   * Merges the synced (or fallback) catalog with the provider's manual rows and
+   * flag. `excludingRecordId` drops one manual row, for the catalog a delete leaves behind.
+   */
   const readMergedCatalog = (
     provider: LLMProvider,
     predefined: ProviderModelsDefinition,
+    excludingRecordId?: number,
   ): ProviderModelsDefinition => mergeProviderModels(
     provider,
     predefined,
-    catalog.listCustomProviderModels(provider),
+    catalog.listCustomProviderModels(provider).filter((record) => record.recordId !== excludingRecordId),
     isCustomModelsOnly(provider),
+    readSyncedModels(provider),
+    syncStatus.isSyncSupported(provider) ? syncStatus.getState(provider) : undefined,
   );
 
   const getProviderModels = async (provider: LLMProvider): Promise<ProviderModelsDefinition> => {
@@ -238,7 +303,10 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     modelId: string,
     currentRecordId?: number,
   ): void => {
-    if (predefined.OPTIONS.some((option) => option.value === modelId)) {
+    if (
+      predefined.OPTIONS.some((option) => option.value === modelId)
+      || synced.listAvailableSyncedProviderModels(provider).some((record) => record.modelId === modelId)
+    ) {
       throw new AppError(`A ${provider} model with this ID already exists.`, {
         code: 'MODEL_ID_ALREADY_EXISTS',
         statusCode: 409,
@@ -324,12 +392,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     // Sessions on the deleted model move to the default of the catalog left
     // behind: the first remaining custom model (the new DEFAULT) while only
     // custom models are listed, or the built-in default once none remain.
-    const fallbackModelId = mergeProviderModels(
-      provider,
-      predefined,
-      catalog.listCustomProviderModels(provider).filter((record) => record.recordId !== recordId),
-      isCustomModelsOnly(provider),
-    ).DEFAULT;
+    const fallbackModelId = readMergedCatalog(provider, predefined, recordId).DEFAULT;
     const removed = catalog.deleteCustomProviderModel(provider, recordId, fallbackModelId);
     if (!removed) {
       throw new AppError('Model not found.', {

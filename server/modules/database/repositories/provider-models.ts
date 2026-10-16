@@ -4,6 +4,8 @@ import type {
   CustomProviderModelInput,
   CustomProviderModelRecord,
   LLMProvider,
+  ProviderModelDiscovery,
+  StoredProviderModelSyncState,
 } from '@/shared/types.js';
 
 type CustomProviderModelRow = {
@@ -14,11 +16,29 @@ type CustomProviderModelRow = {
   sort_order: number;
   effort_values: string | null;
   effort_default: string | null;
+  description: string | null;
+};
+
+type SyncStateRow = {
+  provider: LLMProvider;
+  status: StoredProviderModelSyncState['status'];
+  last_attempt_at: string | null;
+  last_success_at: string | null;
+  error: string | null;
+  cli_version: string | null;
+  sdk_version: string | null;
+  auth_identity: string | null;
+  default_model_id: string | null;
+  model_count: number;
 };
 
 const CUSTOM_PROVIDER_MODEL_COLUMNS = `
-  id, provider, model_id, model_name, sort_order, effort_values, effort_default
+  id, provider, model_id, model_name, sort_order, effort_values, effort_default, description
 `;
+
+/** Row origins in `provider_models.source`; only `manual` rows are user-owned. */
+const MANUAL_SOURCE = 'manual';
+const SYNCED_SOURCE = 'synced';
 
 /**
  * Decodes the stored effort columns. Anything that is not a non-empty JSON
@@ -73,6 +93,19 @@ const toCustomProviderModelRecord = (
   model: row.model_name,
   sortOrder: row.sort_order,
   effort: readStoredEffort(row),
+  description: row.description,
+});
+
+const toSyncState = (row: SyncStateRow): StoredProviderModelSyncState => ({
+  status: row.status,
+  lastAttemptAt: row.last_attempt_at,
+  lastSuccessAt: row.last_success_at,
+  error: row.error,
+  cliVersion: row.cli_version,
+  sdkVersion: row.sdk_version,
+  modelCount: row.model_count,
+  authIdentity: row.auth_identity,
+  defaultModelId: row.default_model_id,
 });
 
 const readCustomProviderModelRow = (
@@ -82,17 +115,20 @@ const readCustomProviderModelRow = (
   const row = getConnection().prepare(`
     SELECT ${CUSTOM_PROVIDER_MODEL_COLUMNS}
     FROM provider_models
-    WHERE provider = ? AND id = ?
+    WHERE provider = ? AND id = ? AND source = '${MANUAL_SOURCE}'
   `).get(provider, recordId) as CustomProviderModelRow | undefined;
 
   return row ?? null;
 };
 
 /**
- * Custom provider-model persistence API consumed by the Providers module.
+ * Provider-model persistence API consumed by the Providers module.
  *
- * Every row in this repository is user-created. Predefined models are owned by
- * provider adapters and never enter this table. Model-id changes are propagated
+ * Rows come in two kinds. `manual` rows are user-created and are the only ones
+ * the custom-model methods see or change. `synced` rows are written solely by
+ * `replaceSyncedProviderModels` from the provider runtime's own catalog; a
+ * sync never touches manual rows. Source-controlled fallback models never enter
+ * this table. Model-id changes are propagated
  * to stored sessions, while deletion replaces affected session selections with
  * the predefined default supplied by the Providers service.
  */
@@ -101,7 +137,7 @@ export const providerModelsDb = {
     const rows = getConnection().prepare(`
       SELECT ${CUSTOM_PROVIDER_MODEL_COLUMNS}
       FROM provider_models
-      WHERE provider = ?
+      WHERE provider = ? AND source = '${MANUAL_SOURCE}'
       ORDER BY sort_order ASC, lower(model_name) ASC, id ASC
     `).all(provider) as CustomProviderModelRow[];
 
@@ -123,7 +159,7 @@ export const providerModelsDb = {
     const row = getConnection().prepare(`
       SELECT ${CUSTOM_PROVIDER_MODEL_COLUMNS}
       FROM provider_models
-      WHERE provider = ? AND model_id = ?
+      WHERE provider = ? AND model_id = ? AND source = '${MANUAL_SOURCE}'
     `).get(provider, modelId) as CustomProviderModelRow | undefined;
 
     return row ? toCustomProviderModelRecord(row) : null;
@@ -137,7 +173,7 @@ export const providerModelsDb = {
     const nextOrder = db.prepare(`
       SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order
       FROM provider_models
-      WHERE provider = ?
+      WHERE provider = ? AND source = '${MANUAL_SOURCE}'
     `).get(provider) as { next_order: number };
 
     const effort = toStoredEffortColumns(input.effort);
@@ -178,7 +214,7 @@ export const providerModelsDb = {
       db.prepare(`
         UPDATE provider_models
         SET model_id = ?, model_name = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE provider = ? AND id = ?
+        WHERE provider = ? AND id = ? AND source = '${MANUAL_SOURCE}'
       `).run(input.id, input.model, provider, recordId);
 
       // An omitted `effort` keeps the stored levels so clients that only edit
@@ -229,7 +265,7 @@ export const providerModelsDb = {
 
       db.prepare(`
         DELETE FROM provider_models
-        WHERE provider = ? AND id = ?
+        WHERE provider = ? AND id = ? AND source = '${MANUAL_SOURCE}'
       `).run(provider, recordId);
 
       return row;
@@ -237,5 +273,141 @@ export const providerModelsDb = {
 
     const row = remove();
     return row ? toCustomProviderModelRecord(row) : null;
+  },
+  /** Synced models the runtime still reports, in the order it reported them. */
+  listAvailableSyncedProviderModels(provider: LLMProvider): CustomProviderModelRecord[] {
+    const rows = getConnection().prepare(`
+      SELECT ${CUSTOM_PROVIDER_MODEL_COLUMNS}
+      FROM provider_models
+      WHERE provider = ? AND source = '${SYNCED_SOURCE}' AND is_available = 1
+      ORDER BY sort_order ASC, id ASC
+    `).all(provider) as CustomProviderModelRow[];
+
+    return rows.map(toCustomProviderModelRecord);
+  },
+
+  /**
+   * Applies one complete, successful catalog query in a single transaction.
+   *
+   * Reported models are inserted or refreshed (name, description, effort) and
+   * marked available; synced rows the runtime no longer reports are kept but
+   * marked unavailable so history and ids survive. A reported id that a user
+   * already added manually is skipped: the manual row keeps its own settings.
+   * Sessions are never modified.
+   */
+  replaceSyncedProviderModels(
+    provider: LLMProvider,
+    discovery: ProviderModelDiscovery,
+    authIdentity: string | null,
+  ): StoredProviderModelSyncState {
+    const db = getConnection();
+    const apply = db.transaction(() => {
+      const manualIds = new Set(
+        (db.prepare(`
+          SELECT model_id FROM provider_models WHERE provider = ? AND source = '${MANUAL_SOURCE}'
+        `).all(provider) as { model_id: string }[]).map((row) => row.model_id),
+      );
+
+      db.prepare(`
+        UPDATE provider_models SET is_available = 0, updated_at = CURRENT_TIMESTAMP
+        WHERE provider = ? AND source = '${SYNCED_SOURCE}'
+      `).run(provider);
+
+      const upsert = db.prepare(`
+        INSERT INTO provider_models (
+          provider, model_id, model_name, sort_order, effort_values, effort_default,
+          source, is_available, description
+        )
+        VALUES (?, ?, ?, ?, ?, ?, '${SYNCED_SOURCE}', 1, ?)
+        ON CONFLICT(provider, model_id) DO UPDATE SET
+          model_name = excluded.model_name,
+          sort_order = excluded.sort_order,
+          effort_values = excluded.effort_values,
+          effort_default = excluded.effort_default,
+          description = excluded.description,
+          is_available = 1,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE provider_models.source = '${SYNCED_SOURCE}'
+      `);
+
+      let storedCount = 0;
+      discovery.models.forEach((model, index) => {
+        if (manualIds.has(model.id)) {
+          return;
+        }
+        const effort = toStoredEffortColumns(
+          model.effort.length > 0
+            ? { values: model.effort, ...(model.defaultEffort ? { default: model.defaultEffort } : {}) }
+            : null,
+        );
+        upsert.run(
+          provider,
+          model.id,
+          model.name,
+          index,
+          effort.values,
+          effort.defaultValue,
+          model.description ?? null,
+        );
+        storedCount += 1;
+      });
+
+      const defaultModelId = discovery.defaultModelId && !manualIds.has(discovery.defaultModelId)
+        ? discovery.defaultModelId
+        : null;
+      db.prepare(`
+        INSERT INTO provider_model_sync_state (
+          provider, status, last_attempt_at, last_success_at, error,
+          cli_version, sdk_version, auth_identity, default_model_id, model_count
+        )
+        VALUES (?, 'success', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, ?, ?, ?, ?, ?)
+        ON CONFLICT(provider) DO UPDATE SET
+          status = 'success',
+          last_attempt_at = CURRENT_TIMESTAMP,
+          last_success_at = CURRENT_TIMESTAMP,
+          error = NULL,
+          cli_version = excluded.cli_version,
+          sdk_version = excluded.sdk_version,
+          auth_identity = excluded.auth_identity,
+          default_model_id = excluded.default_model_id,
+          model_count = excluded.model_count
+      `).run(
+        provider,
+        discovery.cliVersion,
+        discovery.sdkVersion,
+        authIdentity,
+        defaultModelId,
+        storedCount,
+      );
+    });
+
+    apply();
+    return this.getProviderModelSyncState(provider) as StoredProviderModelSyncState;
+  },
+
+  getProviderModelSyncState(provider: LLMProvider): StoredProviderModelSyncState | null {
+    const row = getConnection().prepare(`
+      SELECT provider, status, last_attempt_at, last_success_at, error, cli_version,
+             sdk_version, auth_identity, default_model_id, model_count
+      FROM provider_model_sync_state
+      WHERE provider = ?
+    `).get(provider) as SyncStateRow | undefined;
+
+    return row ? toSyncState(row) : null;
+  },
+
+  /**
+   * Records a failed attempt. The synced rows, `last_success_at`, and the
+   * versions and account of the last good sync are left exactly as they were.
+   */
+  recordProviderModelSyncFailure(provider: LLMProvider, error: string): void {
+    getConnection().prepare(`
+      INSERT INTO provider_model_sync_state (provider, status, last_attempt_at, error)
+      VALUES (?, 'error', CURRENT_TIMESTAMP, ?)
+      ON CONFLICT(provider) DO UPDATE SET
+        status = 'error',
+        last_attempt_at = CURRENT_TIMESTAMP,
+        error = excluded.error
+    `).run(provider, error);
   },
 };

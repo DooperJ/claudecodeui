@@ -8,6 +8,7 @@ import {
   LockKeyhole,
   Pencil,
   Plus,
+  RefreshCw,
   Trash2,
   X,
 } from 'lucide-react';
@@ -73,9 +74,27 @@ export default function ModelLibraryPanel({
   // tab that issued it.
   const [customModelsOnlyErrors, setCustomModelsOnlyErrors] = useState<Partial<Record<LLMProvider, string>>>({});
 
+  // Providers whose manual "Sync models" request is still running, and the last request failure per provider.
+  const [syncingProviders, setSyncingProviders] = useState<LLMProvider[]>([]);
+  const [syncRequestErrors, setSyncRequestErrors] = useState<Partial<Record<LLMProvider, string>>>({});
+
   useEffect(() => {
     setSelectedProvider(initialProvider);
   }, [initialProvider]);
+
+  // The server may start a sync on its own (after sign-in or a CLI/SDK update);
+  // poll until it finishes so the list fills in without a reload.
+  const catalogSyncStatus = providerModelCatalog[selectedProvider]?.SYNC?.status;
+  useEffect(() => {
+    if (catalogSyncStatus !== 'syncing') {
+      return undefined;
+    }
+
+    const timer = window.setInterval(() => {
+      void actions.refresh(selectedProvider).catch(() => undefined);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [actions, catalogSyncStatus, selectedProvider]);
 
   const options = useMemo(
     () => providerModelCatalog[selectedProvider]?.OPTIONS ?? [],
@@ -101,6 +120,12 @@ export default function ModelLibraryPanel({
   const builtInModelsHidden = customModelsOnly && customModels.length > 0;
   const savingCustomModelsOnly = customModelsOnlySavingProviders.includes(selectedProvider);
   const customModelsOnlyError = customModelsOnlyErrors[selectedProvider];
+  // Providers whose runtime can list models carry a sync state; the rest never do.
+  const syncState = providerModelCatalog[selectedProvider]?.SYNC;
+  const showingSyncedModels = predefinedModels.some((option) => option.origin === 'synced');
+  const syncInProgress = syncState?.status === 'syncing' || syncingProviders.includes(selectedProvider);
+  const syncRequestError = syncRequestErrors[selectedProvider];
+  const syncFailureMessage = syncRequestError ?? (syncState?.status === 'error' ? syncState.error : null);
 
   const resetForm = () => {
     setEditing(null);
@@ -130,6 +155,19 @@ export default function ModelLibraryPanel({
       }));
     } finally {
       setCustomModelsOnlySavingProviders((current) => current.filter((entry) => entry !== provider));
+    }
+  };
+
+  /** Re-queries the provider runtime; failures from the query itself arrive in the catalog's sync state. */
+  const handleSync = async (provider: LLMProvider) => {
+    setSyncingProviders((current) => [...current, provider]);
+    setSyncRequestErrors((current) => ({ ...current, [provider]: undefined }));
+    try {
+      await actions.sync(provider);
+    } catch {
+      setSyncRequestErrors((current) => ({ ...current, [provider]: t('chat:modelLibrary.syncFailedRequest') }));
+    } finally {
+      setSyncingProviders((current) => current.filter((entry) => entry !== provider));
     }
   };
 
@@ -496,17 +534,64 @@ export default function ModelLibraryPanel({
           <section>
             <div className="mb-2 flex items-center justify-between gap-3 px-1">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-foreground">Built-in models</p>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">Maintained by CloudCLI and read-only</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-foreground">
+                  {showingSyncedModels ? t('chat:modelLibrary.syncedModelsTitle') : t('chat:modelLibrary.builtInModelsTitle')}
+                </p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  {showingSyncedModels
+                    ? t('chat:modelLibrary.syncedModelsHint', { provider: selectedProviderLabel })
+                    : t('chat:modelLibrary.builtInModelsHint')}
+                </p>
               </div>
-              {!builtInModelsHidden && (
-                <Badge variant="secondary" className="rounded-full text-[10px]">{predefinedModels.length}</Badge>
-              )}
+              <div className="flex items-center gap-2">
+                {!builtInModelsHidden && (
+                  <Badge variant="secondary" className="rounded-full text-[10px]">{predefinedModels.length}</Badge>
+                )}
+                {syncState && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={syncInProgress}
+                    onClick={() => void handleSync(selectedProvider)}
+                    className="h-8 rounded-lg"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${syncInProgress ? 'animate-spin' : ''}`} />
+                    {syncInProgress ? t('chat:modelLibrary.syncing') : t('chat:modelLibrary.syncModels')}
+                  </Button>
+                )}
+              </div>
             </div>
+            {syncState && (
+              <div className="mb-2 space-y-1 px-1 text-[11px] leading-4 text-muted-foreground">
+                <p>
+                  {syncState.lastSuccessAt
+                    ? t('chat:modelLibrary.syncLastSuccess', { time: new Date(syncState.lastSuccessAt).toLocaleString() })
+                    : t('chat:modelLibrary.syncNever')}
+                  {syncState.lastSuccessAt && (syncState.cliVersion || syncState.sdkVersion) && (
+                    <span className="ml-2 font-mono">
+                      {t('chat:modelLibrary.syncVersions', {
+                        cli: syncState.cliVersion ?? '–',
+                        sdk: syncState.sdkVersion ?? '–',
+                      })}
+                    </span>
+                  )}
+                </p>
+                {syncFailureMessage && !syncInProgress && (
+                  <p role="alert" className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {syncRequestError ?? t('chat:modelLibrary.syncFailed', { error: syncFailureMessage })}
+                  </p>
+                )}
+              </div>
+            )}
             {builtInModelsHidden ? (
               <div className="flex items-center gap-2 rounded-2xl border border-dashed border-border bg-background/60 px-4 py-3 text-xs text-muted-foreground">
                 <EyeOff className="h-3.5 w-3.5 shrink-0" />
                 {t('chat:modelLibrary.builtInModelsHidden')}
+              </div>
+            ) : predefinedModels.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-border bg-background/60 px-4 py-6 text-center text-xs text-muted-foreground">
+                {t('chat:modelLibrary.syncEmpty', { provider: selectedProviderLabel })}
               </div>
             ) : (
               <div className="overflow-hidden rounded-2xl border border-border/70 bg-background/70">

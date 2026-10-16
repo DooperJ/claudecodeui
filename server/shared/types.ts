@@ -77,8 +77,13 @@ export type ProviderModelOption = {
   description?: string;
   /** Stable SQLite row id used only by model-management actions. */
   recordId?: number;
-  /** True for user-created rows; false for immutable CloudCLI defaults. */
+  /** True for user-created rows; false for built-in defaults and synced rows. */
   isCustom?: boolean;
+  /**
+   * Where the row came from: `builtin` (source-controlled fallback), `synced`
+   * (discovered from the provider's own runtime) or `manual` (user-created).
+   */
+  origin?: 'builtin' | 'synced' | 'manual';
   effort?: {
     default?: string;
     values: {
@@ -109,6 +114,61 @@ export type ProviderModelsDefinition = {
    * Adapter catalogs omit it.
    */
   CUSTOM_MODELS_ONLY?: boolean;
+  /**
+   * Sync status of the provider's discovered catalog, set by the Providers
+   * service for providers that support model discovery (Claude, Codex) and
+   * omitted for the rest. Adapter catalogs omit it.
+   */
+  SYNC?: ProviderModelSyncState;
+};
+
+// ---------------------------
+//----------------- PROVIDER MODEL SYNC TYPES ------------
+/**
+ * One model reported by a provider's own runtime during catalog sync.
+ *
+ * `id` is the exact identifier the runtime accepts. `effort` lists the
+ * reasoning levels the runtime reported for this model (weakest first) and is
+ * empty when the model reported none; nothing is guessed. `defaultEffort`, when
+ * present, is one of `effort`.
+ */
+export type DiscoveredProviderModel = {
+  id: string;
+  name: string;
+  description?: string;
+  effort: string[];
+  defaultEffort?: string;
+};
+
+/**
+ * Result of one successful catalog query against a provider runtime.
+ *
+ * `models` is already normalized and de-duplicated and is never empty (an empty
+ * answer is a failed sync). `defaultModelId`, when present, is one of `models`.
+ * The version fields identify the CLI and SDK that actually answered.
+ */
+export type ProviderModelDiscovery = {
+  models: DiscoveredProviderModel[];
+  defaultModelId?: string;
+  cliVersion: string | null;
+  sdkVersion: string | null;
+};
+
+/**
+ * Persisted and live state of a provider's model sync.
+ *
+ * `syncing` is reported while a sync is in flight in this process; the other
+ * statuses are persisted. `never` means no sync has been attempted yet. A
+ * failed sync keeps `lastSuccessAt` and the previously synced catalog intact.
+ */
+export type ProviderModelSyncState = {
+  status: 'never' | 'syncing' | 'success' | 'error';
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  error: string | null;
+  cliVersion: string | null;
+  sdkVersion: string | null;
+  modelCount: number;
 };
 
 /**
@@ -127,6 +187,8 @@ export type CustomProviderModelRecord = {
   sortOrder: number;
   /** NULL for rows that never declared effort levels, including pre-existing rows. */
   effort: CustomProviderModelEffort | null;
+  /** Runtime-reported description; only synced rows carry one. */
+  description?: string | null;
 };
 
 /**
@@ -159,6 +221,18 @@ export type CustomProviderModelInput = {
    * effort metadata keep working; `null` clears it.
    */
   effort?: CustomProviderModelEffort | null;
+};
+
+/**
+ * Sync state as persisted, including the bookkeeping the sync service needs but
+ * the UI does not. `authIdentity` identifies the account the last attempt ran
+ * under (a change means a re-login) and `defaultModelId` is the runtime's
+ * default among the synced models.
+ */
+export type StoredProviderModelSyncState = Omit<ProviderModelSyncState, 'status'> & {
+  status: Exclude<ProviderModelSyncState['status'], 'syncing'>;
+  authIdentity: string | null;
+  defaultModelId: string | null;
 };
 
 // ---------------------------

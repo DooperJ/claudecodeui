@@ -14,6 +14,8 @@ export type ProviderModelOption = {
   description?: string;
   recordId?: number;
   isCustom?: boolean;
+  /** `builtin` fallback, `synced` from the provider's runtime, or `manual` user-created. Older servers omit it. */
+  origin?: 'builtin' | 'synced' | 'manual';
   effort?: {
     default?: string;
     values: {
@@ -35,6 +37,22 @@ export type ProviderModelsDefinition = {
   DEFAULT: string;
   EFFORT_LEVELS?: string[];
   CUSTOM_MODELS_ONLY?: boolean;
+  /** Sync status of the provider's runtime-discovered catalog; absent for providers that cannot sync. */
+  SYNC?: ProviderModelSyncState;
+};
+
+/**
+ * Status of syncing a provider's model catalog from its own runtime. `syncing` means a sync is running now;
+ * `error` keeps the previous catalog and carries the reason in `error`; timestamps are ISO strings or null.
+ */
+export type ProviderModelSyncState = {
+  status: 'never' | 'syncing' | 'success' | 'error';
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  error: string | null;
+  cliVersion: string | null;
+  sdkVersion: string | null;
+  modelCount: number;
 };
 
 /**
@@ -62,6 +80,10 @@ export type ProviderModelActions = {
   remove(provider: LLMProvider, existing: ProviderModelOption): Promise<void>;
   /** Turns the provider's "use only my models" flag on or off. */
   setCustomModelsOnly(provider: LLMProvider, enabled: boolean): Promise<void>;
+  /** Asks the server to re-query the provider's runtime for its models; resolves after the catalog is updated. */
+  sync(provider: LLMProvider): Promise<void>;
+  /** Re-reads the provider's catalog, used to pick up a sync the server started on its own. */
+  refresh(provider: LLMProvider): Promise<void>;
 };
 
 // ---------------------------

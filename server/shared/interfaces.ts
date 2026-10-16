@@ -10,6 +10,7 @@ import type {
   ProviderSkillListOptions,
   ProviderAuthStatus,
   ProviderCurrentActiveModel,
+  ProviderModelDiscovery,
   ProviderModelsDefinition,
   ProviderMcpServer,
   ProviderSkillCreateInput,
@@ -125,6 +126,24 @@ export interface IProviderModels {
    * provider-specific lookup finds nothing.
    */
   getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel>;
+
+  /**
+   * Asks the runtime CloudCLI actually executes for its model catalog.
+   *
+   * Optional: only providers whose runtime can list models implement it. It
+   * must be read-only (no inference turn, no persisted session), must resolve
+   * to a non-empty, normalized and de-duplicated list, and must reject on
+   * failure instead of returning a partial or empty answer, because the caller
+   * replaces the stored catalog with the result.
+   */
+  discoverModels?(): Promise<ProviderModelDiscovery>;
+
+  /**
+   * Cheaply reports the versions of the CLI and SDK that `discoverModels`
+   * would query, without starting a catalog query. A `null` field means that
+   * component is not versioned separately (for example a bundled binary).
+   */
+  readRuntimeVersions?(): Promise<{ cliVersion: string | null; sdkVersion: string | null }>;
 }
 
 // ---------------------------

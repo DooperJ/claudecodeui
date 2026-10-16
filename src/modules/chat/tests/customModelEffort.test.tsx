@@ -106,6 +106,8 @@ const createActions = () => {
     },
     remove: async () => {},
     setCustomModelsOnly: async () => {},
+    sync: async () => {},
+    refresh: async () => {},
   };
   return { actions, created, updated };
 };

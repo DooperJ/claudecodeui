@@ -303,6 +303,18 @@
     "customModelsOnly": "仅使用我的模型",
     "customModelsOnlyHint": "在所有模型选择器中隐藏 {{provider}} 的内置模型，并将您的第一个模型设为默认模型。在您添加模型之前，内置模型仍会显示。",
     "builtInModelsHidden": "开启“仅使用我的模型”时，这些模型不会出现在模型选择器中。",
-    "customModelsOnlyFailed": "无法更改此设置。"
+    "customModelsOnlyFailed": "无法更改此设置。",
+    "syncModels": "同步模型",
+    "syncing": "同步中…",
+    "syncedModelsTitle": "已同步模型",
+    "syncedModelsHint": "从 {{provider}} 运行时读取，只读",
+    "builtInModelsTitle": "内置模型",
+    "builtInModelsHint": "同步模型前的备用列表",
+    "syncEmpty": "尚未同步任何模型。请先登录 {{provider}}，然后点击“同步模型”。",
+    "syncLastSuccess": "上次同步：{{time}}",
+    "syncVersions": "CLI {{cli}} · SDK {{sdk}}",
+    "syncNever": "尚未同步",
+    "syncFailed": "同步失败：{{error}}。已保留之前的列表。",
+    "syncFailedRequest": "无法同步模型。"
   }
 }

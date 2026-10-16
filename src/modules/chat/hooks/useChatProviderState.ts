@@ -807,12 +807,45 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     applyProviderCatalog(targetProvider, body.data.models);
   }, [applyProviderCatalog]);
 
+  /** Applies a catalog returned by the sync endpoint or a plain catalog re-read. */
+  const applyCatalogResponse = useCallback(async (
+    targetProvider: LLMProvider,
+    response: Response,
+    failureMessage: string,
+  ) => {
+    const body = (await response.json()) as ProviderModelMutationApiResponse;
+    if (!response.ok || !body.success || !body.data?.models) {
+      throw new Error(body.error?.message || failureMessage);
+    }
+
+    applyProviderCatalog(targetProvider, body.data.models);
+  }, [applyProviderCatalog]);
+
+  const syncModels = useCallback(async (targetProvider: LLMProvider) => {
+    const response = await api.providers.syncModels(targetProvider);
+    await applyCatalogResponse(targetProvider, response, 'Unable to sync models.');
+  }, [applyCatalogResponse]);
+
+  const refreshModels = useCallback(async (targetProvider: LLMProvider) => {
+    const response = await api.providers.models(targetProvider);
+    await applyCatalogResponse(targetProvider, response, 'Unable to load models.');
+  }, [applyCatalogResponse]);
+
   const providerModelActions = useMemo<ProviderModelActions>(() => ({
     create: createCustomModel,
     update: updateCustomModel,
     remove: removeCustomModel,
     setCustomModelsOnly,
-  }), [createCustomModel, removeCustomModel, setCustomModelsOnly, updateCustomModel]);
+    sync: syncModels,
+    refresh: refreshModels,
+  }), [
+    createCustomModel,
+    refreshModels,
+    removeCustomModel,
+    setCustomModelsOnly,
+    syncModels,
+    updateCustomModel,
+  ]);
 
   return {
     provider,

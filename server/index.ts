@@ -13,6 +13,7 @@ import { AppError, findApplicationRoot, getModuleDirectory, IS_PLATFORM, termina
 import {
     closeSessionsWatcher,
     initializeSessionsWatcher,
+    providerModelSyncService,
     providerRuntimeService,
 } from '@/modules/providers/index.js';
 import { chatRunRegistry, createWebSocketServer } from '@/modules/websocket/index.js';
@@ -369,6 +370,9 @@ async function startServer() {
 
             // Start watching the projects folder for changes
             await initializeSessionsWatcher();
+            // Refreshes provider model catalogs whose CLI/SDK or account changed
+            // since the last sync; runs in the background and never blocks startup.
+            void providerModelSyncService.syncStaleProviders();
             // Sends anything that came due while the server was not running,
             // then keeps polling.
             initializeScheduledMessageDispatcher(providerRuntimeService);

@@ -402,6 +402,18 @@
     "customModelsOnly": "Use only my models",
     "customModelsOnlyHint": "Hide the built-in {{provider}} models from every model picker and make your first model the default. Built-in models stay listed until you add a model.",
     "builtInModelsHidden": "Hidden from model pickers while “Use only my models” is on.",
-    "customModelsOnlyFailed": "Unable to change this setting."
+    "customModelsOnlyFailed": "Unable to change this setting.",
+    "syncModels": "Sync models",
+    "syncing": "Syncing…",
+    "syncedModelsTitle": "Synced models",
+    "syncedModelsHint": "Read from the {{provider}} runtime and read-only",
+    "builtInModelsTitle": "Built-in models",
+    "builtInModelsHint": "Fallback list until models are synced",
+    "syncEmpty": "No models have been synced yet. Sign in to {{provider}} and press “Sync models”.",
+    "syncLastSuccess": "Last synced {{time}}",
+    "syncVersions": "CLI {{cli}} · SDK {{sdk}}",
+    "syncNever": "Not synced yet",
+    "syncFailed": "Sync failed: {{error}}. The previous list was kept.",
+    "syncFailedRequest": "Unable to sync models."
   }
 }
