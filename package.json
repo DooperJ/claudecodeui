@@ -155,6 +155,7 @@
     "@openai/codex-sdk": "^0.156.0",
     "@replit/codemirror-minimap": "^0.5.2",
     "@tailwindcss/typography": "^0.5.16",
+    "@tanstack/react-virtual": "3.14.21",
     "@uiw/react-codemirror": "^4.23.13",
     "@vscode/ripgrep": "^1.17.1",
     "@xterm/addon-clipboard": "^0.1.0",

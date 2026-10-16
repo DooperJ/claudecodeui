@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
-import type { Project, ProjectSession } from '@/shared/types';
+import type { NormalizedMessage, Project, ProjectSession } from '@/shared/types';
 
 /**
- * The background-tasks strip reveals a task's row by widening the visible
- * window and then scrolling to the row's wrapper. The widened window commits
- * after the current frame, so the first lookup runs before the row exists;
- * settling for the nearest row there scrolled to an unrelated row and ended
- * the retry chain, and the task's row never came into view.
+ * The background-tasks strip reveals a task's row by asking the virtual list to
+ * scroll to it. The row can be absent for a moment (a re-render is still
+ * landing), so the jump retries; settling for the nearest row on the first
+ * attempt scrolled to an unrelated row and ended the retry chain, and the
+ * task's row never came into view.
  */
 
 vi.mock('@/shared/api', () => ({
@@ -20,6 +20,8 @@ vi.mock('@/shared/api', () => ({
 const project: Project = { projectId: 'project-1', path: '/repo', fullPath: '/repo', displayName: 'Repo', isStarred: false };
 const session: ProjectSession = { id: 'session-a', summary: 'A', lastActivity: '2026-01-01T00:00:00.000Z', messageCount: 1 } as ProjectSession;
 const slot = { fetchedAt: 1, status: 'idle' as const, total: 0, hasMore: false, offset: 0 };
+
+let stored: NormalizedMessage[] = [];
 const store = {
   fetchFromServer: vi.fn(async () => slot),
   fetchMore: vi.fn(),
@@ -29,33 +31,31 @@ const store = {
   isStale: vi.fn(() => false),
   updateStreaming: vi.fn(),
   finalizeStreaming: vi.fn(),
-  getMessages: vi.fn(() => []),
+  getMessages: vi.fn(() => stored),
   getSessionSlot: vi.fn(() => slot),
 };
 
-const row = (timestamp: string) => {
-  const element = document.createElement('div');
-  element.setAttribute('data-message-timestamp', timestamp);
-  element.scrollIntoView = vi.fn();
-  return element;
-};
-
-// Frames run by hand, so a row can be added between two attempts the way a
-// React commit adds it.
-const frames: FrameRequestCallback[] = [];
+const message = (id: string, timestamp: string): NormalizedMessage => ({
+  id,
+  kind: 'text',
+  role: 'assistant',
+  provider: 'claude',
+  sessionId: 'session-a',
+  content: id,
+  timestamp,
+} as NormalizedMessage);
 
 beforeEach(() => {
-  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; });
-  vi.stubGlobal('cancelAnimationFrame', () => undefined);
+  vi.useFakeTimers();
+  stored = [];
 });
 
 afterEach(() => {
-  frames.length = 0;
-  vi.unstubAllGlobals();
+  vi.useRealTimers();
   vi.resetModules();
 });
 
-test('revealing a row not yet rendered waits for it instead of scrolling to its neighbour', async () => {
+async function renderSessionState() {
   const { useChatSessionState } = await import('@/modules/chat/hooks/useChatSessionState');
   const hook = renderHook(() =>
     useChatSessionState({
@@ -70,56 +70,44 @@ test('revealing a row not yet rendered waits for it instead of scrolling to its 
       sessionStore: store as never,
     }),
   );
-  const container = document.createElement('div');
-  const neighbour = row('2026-08-21T10:32:09.000Z');
-  container.appendChild(neighbour);
-  (hook.result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container;
-  frames.length = 0;
+  const scrollToIndex = vi.fn();
+  (hook.result.current.listRef as { current: unknown }).current = { scrollToIndex };
+  return { hook, scrollToIndex };
+}
+
+test('revealing a row not yet in the list waits for it instead of scrolling to its neighbour', async () => {
+  stored = [message('neighbour', '2026-08-21T10:32:09.000Z')];
+  const { hook, scrollToIndex } = await renderSessionState();
 
   await act(async () => {
     hook.result.current.revealMessage({ type: 'assistant', content: '', timestamp: '2026-08-21T10:32:10.000Z' });
   });
+  assert.equal(scrollToIndex.mock.calls.length, 0, 'the neighbour must not be scrolled to');
 
-  // First attempt: the target row has not been committed yet.
-  assert.equal(frames.length, 1);
-  await act(async () => { frames.shift()?.(0); });
-  assert.equal((neighbour.scrollIntoView as ReturnType<typeof vi.fn>).mock.calls.length, 0, 'the neighbour must not be scrolled to');
-  assert.equal(frames.length, 1, 'the chain goes on');
+  // The row arrives with a later render; the next retry finds it.
+  stored = [...stored, message('target', '2026-08-21T10:32:10.000Z')];
+  await act(async () => {
+    hook.rerender();
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(200);
+  });
 
-  // The commit lands the row; the next attempt finds it.
-  const target = row('2026-08-21T10:32:10.000Z');
-  container.appendChild(target);
-  await act(async () => { frames.shift()?.(0); });
-  assert.equal((target.scrollIntoView as ReturnType<typeof vi.fn>).mock.calls.length, 1);
-  assert.equal(frames.length, 0);
+  assert.equal(scrollToIndex.mock.calls.length, 1);
+  assert.equal(scrollToIndex.mock.calls[0][0].index, 1, 'the second row');
+  assert.equal(scrollToIndex.mock.calls[0][0].align, 'center');
 });
 
 test('the last attempt settles for the nearest row, for a hit collapsed inside a tool group', async () => {
-  const { useChatSessionState } = await import('@/modules/chat/hooks/useChatSessionState');
-  const hook = renderHook(() =>
-    useChatSessionState({
-      isActive: true,
-      selectedProject: project,
-      selectedSession: session,
-      ws: null,
-      sendMessage: vi.fn(),
-      resetStreamingState: vi.fn(),
-      statusCheckSentAtRef: { current: new Map() },
-      lastSeqRef: { current: new Map() },
-      sessionStore: store as never,
-    }),
-  );
-  const container = document.createElement('div');
-  const group = row('2026-08-21T10:32:09.000Z');
-  container.appendChild(group);
-  (hook.result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container;
-  frames.length = 0;
+  stored = [message('group', '2026-08-21T10:32:09.000Z')];
+  const { hook, scrollToIndex } = await renderSessionState();
 
   await act(async () => {
     hook.result.current.revealMessage({ type: 'assistant', content: '', timestamp: '2026-08-21T10:32:10.000Z' });
+    // 20 retries, 150ms apart.
+    await vi.advanceTimersByTimeAsync(3500);
   });
-  while (frames.length > 0) {
-    await act(async () => { frames.shift()?.(0); });
-  }
-  assert.equal((group.scrollIntoView as ReturnType<typeof vi.fn>).mock.calls.length, 1);
+
+  assert.equal(scrollToIndex.mock.calls.length, 1);
+  assert.equal(scrollToIndex.mock.calls[0][0].index, 0);
 });

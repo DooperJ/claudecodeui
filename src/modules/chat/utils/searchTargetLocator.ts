@@ -93,18 +93,3 @@ export function findSearchTargetIndex(
 
   return -1;
 }
-
-/**
- * How many trailing messages must be rendered for `targetIndex` to be on screen.
- *
- * `visibleMessages` is a tail slice, so covering an old hit means rendering
- * everything after it. Exported for the caller and pinned by tests because an
- * off-by-one here scrolls to the wrong row or to nothing at all.
- */
-export function resolveSearchWindowSize(
-  messageCount: number,
-  targetIndex: number,
-  trailingContext: number,
-): number {
-  return messageCount - targetIndex + trailingContext;
-}

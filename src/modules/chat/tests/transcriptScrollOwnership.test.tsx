@@ -6,10 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedMessage, Project, ProjectSession } from '@/shared/types';
 
 /**
- * The transcript's scroll position is written from five places coordinated by
- * refs and timers rather than by one owner. These are the two cases where that
- * coordination was observably wrong; both are timing bugs, so they are driven
- * on fake timers rather than by clicking.
+ * The transcript's scroll position belongs to the virtual list. These pin the
+ * hook's side of that contract: it asks the list to scroll (never writes pixel
+ * offsets), reads "scrolled up" only from the list's own report, and does not
+ * let a search jump from one session scroll the next. The jump is a timing
+ * case, so it is driven on fake timers rather than by clicking.
  */
 
 vi.mock('@/shared/api', () => ({
@@ -133,73 +134,39 @@ afterEach(() => {
   vi.resetModules();
 });
 
-describe('deferred scroll-to-bottom', () => {
-  it('does not yank the view back down when the user scrolls up inside the delay', async () => {
+describe('scroll-to-bottom ownership', () => {
+  it('jumps to the last row through the virtual list instead of writing pixel offsets', async () => {
     const messages = new Map<string, NormalizedMessage[]>([
       [SESSION_A, [buildMessage(0, '2026-01-01T00:00:00.000Z')]],
     ]);
-    const store = createStore(messages);
-    const { result, rerender } = await renderChatSessionState({
+    const { result } = await renderChatSessionState({
       session: { id: SESSION_A } as ProjectSession,
-      store,
+      store: createStore(messages),
     });
-
-    const container = createContainer(5000, 500);
-    (result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container.element;
-
-    // A new row lands while the user is at the bottom: a scroll is armed for +50ms.
-    messages.set(SESSION_A, [
-      ...messages.get(SESSION_A)!,
-      buildMessage(1, '2026-01-01T00:00:01.000Z'),
-    ]);
-    act(() => {
-      rerender({ session: { id: SESSION_A } as ProjectSession });
-    });
-
-    // ...and the user drags upward before it fires.
-    act(() => {
-      result.current.setIsUserScrolledUp(true);
-    });
-    container.writes.length = 0;
+    const scrollToIndex = vi.fn();
+    (result.current.listRef as { current: unknown }).current = { scrollToIndex };
 
     act(() => {
-      vi.advanceTimersByTime(200);
+      result.current.scrollToBottom();
     });
 
-    assert.deepEqual(
-      container.writes,
-      [],
-      `a scroll armed before the user scrolled up must not fire afterwards; got ${JSON.stringify(container.writes)}`,
-    );
+    expect(scrollToIndex).toHaveBeenCalledWith({ index: 'LAST', align: 'end', behavior: 'auto' });
   });
 
-  it('still sticks to the bottom when the user has not scrolled away', async () => {
+  it('takes "scrolled up" from the list\'s at-bottom report and from nothing else', async () => {
     const messages = new Map<string, NormalizedMessage[]>([
       [SESSION_A, [buildMessage(0, '2026-01-01T00:00:00.000Z')]],
     ]);
-    const store = createStore(messages);
-    const { result, rerender } = await renderChatSessionState({
+    const { result } = await renderChatSessionState({
       session: { id: SESSION_A } as ProjectSession,
-      store,
+      store: createStore(messages),
     });
 
-    const container = createContainer(5000, 500);
-    (result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container.element;
+    act(() => result.current.handleAtBottomChange(false));
+    assert.equal(result.current.isUserScrolledUp, true);
 
-    messages.set(SESSION_A, [
-      ...messages.get(SESSION_A)!,
-      buildMessage(1, '2026-01-01T00:00:01.000Z'),
-    ]);
-    act(() => {
-      rerender({ session: { id: SESSION_A } as ProjectSession });
-    });
-    container.writes.length = 0;
-
-    act(() => {
-      vi.advanceTimersByTime(200);
-    });
-
-    expect(container.writes).toContain(container.scrollHeight);
+    act(() => result.current.handleAtBottomChange(true));
+    assert.equal(result.current.isUserScrolledUp, false);
   });
 });
 
@@ -227,8 +194,8 @@ describe('search jump ownership', () => {
     container.element.appendChild(sessionBRow);
 
     (result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container.element;
-    const scrollIntoView = vi.fn();
-    Element.prototype.scrollIntoView = scrollIntoView;
+    const scrollToIndex = vi.fn();
+    (result.current.listRef as { current: unknown }).current = { scrollToIndex };
 
     // Let the jump arm and start retrying.
     await act(async () => {
@@ -246,7 +213,7 @@ describe('search jump ownership', () => {
     });
 
     assert.equal(
-      scrollIntoView.mock.calls.length,
+      scrollToIndex.mock.calls.length,
       0,
       'a jump requested in the previous session must not scroll the new one',
     );

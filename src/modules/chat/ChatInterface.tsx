@@ -145,9 +145,10 @@ function ChatInterface({
     setIsUserScrolledUp,
     tokenBudget,
     setTokenBudget,
-    visibleMessageCount,
-    visibleMessages,
-    loadEarlierMessages,
+    transcriptItems,
+    listRef,
+    handleAtBottomChange,
+    loadOlderMessages,
     revealMessage,
     loadAllMessages,
     loadFullTranscript,
@@ -158,7 +159,6 @@ function ChatInterface({
     createDiff,
     scrollContainerRef,
     scrollToBottom,
-    scrollToBottomAndReset,
     handleScroll,
     requestLatestMessages,
   } = useChatSessionState({
@@ -171,6 +171,7 @@ function ChatInterface({
     newSessionTrigger,
     processingSessions,
     onSessionIdle,
+    showThinking,
     resetStreamingState,
     statusCheckSentAtRef,
     lastSeqRef,
@@ -461,6 +462,11 @@ function ChatInterface({
           <TranscriptSessionContext.Provider value={transcriptSessionValue}>
             <ChatMessagesPane
               scrollContainerRef={scrollContainerRef}
+              listRef={listRef}
+              transcriptItems={transcriptItems}
+              onAtBottomChange={handleAtBottomChange}
+              onScroll={handleScroll}
+              onStartReached={loadOlderMessages}
               // Not redundant with the `scroll` listener. A first page is 20 rows,
               // tool results fold into their calls, and the "load earlier" link is
               // hidden while more pages exist — so a short transcript is often not
@@ -490,9 +496,6 @@ function ChatInterface({
               hasMoreMessages={hasMoreMessages}
               totalMessages={totalMessages}
               sessionMessagesCount={chatMessages.length}
-              visibleMessageCount={visibleMessageCount}
-              visibleMessages={visibleMessages}
-              loadEarlierMessages={loadEarlierMessages}
               revealMessage={revealMessage}
               backgroundTasks={sessionActivity?.tasks}
               sendMessage={sendMessage}
@@ -523,7 +526,7 @@ function ChatInterface({
             <div className="pointer-events-none absolute -top-11 left-0 right-0 z-20 flex justify-center">
               <button
                 type="button"
-                onClick={scrollToBottomAndReset}
+                onClick={scrollToBottom}
                 aria-label={t('input.scrollToBottom', { defaultValue: 'Scroll to bottom' })}
                 className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full border border-border/50 bg-card text-muted-foreground shadow-sm transition-all duration-200 hover:bg-accent hover:text-foreground"
                 title={t('input.scrollToBottom', { defaultValue: 'Scroll to bottom' })}

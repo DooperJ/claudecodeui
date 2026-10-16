@@ -6,6 +6,7 @@ import { test, vi } from 'vitest';
 
 import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
 import { UiPreferencesProvider } from '@/shared/context/UiPreferencesContext';
+import { groupConsecutiveTools } from '@/modules/chat/utils/toolGrouping';
 import type { ChatMessage } from '@/shared/types';
 
 /**
@@ -62,6 +63,7 @@ function buildHistory(): ChatMessage[] {
 const noop = () => undefined;
 const stable = {
   scrollContainerRef: createRef<HTMLDivElement>(),
+  listRef: createRef(),
   textareaRef: createRef<HTMLTextAreaElement>(),
   selectedSession: { id: 'session-1' },
   selectedProject: { projectId: 'project-1', name: 'repo', path: '/repo' },
@@ -77,6 +79,10 @@ function paneProps(chatMessages: ChatMessage[]) {
     ...stable,
     onWheel: noop,
     onTouchMove: noop,
+    onScroll: noop,
+    onAtBottomChange: noop,
+    onStartReached: noop,
+    transcriptItems: groupConsecutiveTools(chatMessages, true),
     isLoadingSessionMessages: false,
     chatMessages,
     currentSessionId: 'session-1',
@@ -92,9 +98,6 @@ function paneProps(chatMessages: ChatMessage[]) {
     hasMoreMessages: false,
     totalMessages: chatMessages.length,
     sessionMessagesCount: chatMessages.length,
-    visibleMessageCount: 1000,
-    visibleMessages: chatMessages,
-    loadEarlierMessages: noop,
     revealMessage: noop,
     sendMessage: noop,
     loadAllMessages: noop,

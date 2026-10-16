@@ -2,10 +2,7 @@ import assert from 'node:assert/strict';
 
 import { test } from 'vitest';
 
-import {
-  findSearchTargetIndex,
-  resolveSearchWindowSize,
-} from '@/modules/chat/utils/searchTargetLocator';
+import { findSearchTargetIndex } from '@/modules/chat/utils/searchTargetLocator';
 import type { ChatMessage } from '@/shared/types';
 
 /**
@@ -127,24 +124,4 @@ test('only the leading part of an over-long snippet has to match', () => {
   const messages: ChatMessage[] = [message(`${head}TAIL-IN-TRANSCRIPT`, '2024-01-01T10:00:00.000Z')];
 
   assert.equal(findSearchTargetIndex(messages, { snippet: `${head}DIFFERENT-TAIL` }), 0);
-});
-
-test('the search window covers the resolved target plus trailing context', () => {
-  // visibleMessages is a tail slice, so covering index N means rendering
-  // everything after it.
-  assert.equal(resolveSearchWindowSize(100, 99, 20), 21, 'newest message needs a small window');
-  assert.equal(resolveSearchWindowSize(100, 0, 20), 120, 'oldest message needs the whole list');
-  assert.equal(resolveSearchWindowSize(100, 50, 20), 70);
-});
-
-test('the window always includes the target itself', () => {
-  const messageCount = 40;
-  for (let targetIndex = 0; targetIndex < messageCount; targetIndex++) {
-    const windowSize = resolveSearchWindowSize(messageCount, targetIndex, 0);
-    const firstRenderedIndex = messageCount - windowSize;
-    assert.ok(
-      firstRenderedIndex <= targetIndex,
-      `target ${targetIndex} fell outside a window of ${windowSize}`,
-    );
-  }
 });
