@@ -1,12 +1,9 @@
 import assert from 'node:assert/strict';
 
-import { createRef } from 'react';
 import { render } from '@testing-library/react';
 import { test } from 'vitest';
 
-import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
-import { UiPreferencesProvider } from '@/shared/context/UiPreferencesContext';
-import { groupConsecutiveTools } from '@/modules/chat/utils/toolGrouping';
+import { renderTranscriptPane as renderPane } from '@/modules/chat/tests/renderTranscriptPane';
 import type { ChatMessage } from '@/shared/types';
 
 /**
@@ -17,8 +14,6 @@ import type { ChatMessage } from '@/shared/types';
  * find the reader's row, did not hold the position, and the view jumped to
  * unrelated history.
  */
-
-const noop = () => undefined;
 
 const toolCall = (second: number, path: string): ChatMessage => ({
   type: 'tool',
@@ -35,58 +30,6 @@ const reply = (second: number, content: string): ChatMessage => ({
   content,
   timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString(),
 });
-
-function renderPane(chatMessages: ChatMessage[]) {
-  const props = {
-    scrollContainerRef: createRef<HTMLDivElement>(),
-    listRef: createRef(),
-    textareaRef: createRef<HTMLTextAreaElement>(),
-    selectedSession: { id: 'session-1' },
-    selectedProject: { projectId: 'project-1', name: 'repo', path: '/repo' },
-    providerModels: {},
-    providerModelCatalog: {},
-    providerModelActions: {},
-    createDiff: () => [],
-    onGrantToolPermission: () => ({ success: true }),
-    onWheel: noop,
-    onTouchMove: noop,
-    onScroll: noop,
-    onAtBottomChange: noop,
-    onStartReached: noop,
-    transcriptItems: groupConsecutiveTools(chatMessages, true),
-    isLoadingSessionMessages: false,
-    chatMessages,
-    currentSessionId: 'session-1',
-    provider: 'claude',
-    setProvider: noop,
-    setProviderModel: noop,
-    providerModelsLoading: false,
-    tasksEnabled: false,
-    isTaskMasterInstalled: false,
-    onShowAllTasks: null,
-    setInput: noop,
-    isLoadingMoreMessages: false,
-    hasMoreMessages: false,
-    totalMessages: chatMessages.length,
-    sessionMessagesCount: chatMessages.length,
-    revealMessage: noop,
-    sendMessage: noop,
-    loadAllMessages: noop,
-    allMessagesLoaded: true,
-    isLoadingAllMessages: false,
-    loadAllJustFinished: false,
-    showLoadAllOverlay: false,
-    showRawParameters: false,
-    showThinking: true,
-  };
-  /* eslint-disable @typescript-eslint/no-explicit-any */
-  return (
-    <UiPreferencesProvider>
-      <ChatMessagesPane {...(props as any)} />
-    </UiPreferencesProvider>
-  );
-  /* eslint-enable @typescript-eslint/no-explicit-any */
-}
 
 const rowKeys = (container: HTMLElement) =>
   [...container.querySelectorAll('[data-item-key]')].map((element) => element.getAttribute('data-item-key'));

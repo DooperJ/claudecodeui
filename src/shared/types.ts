@@ -232,6 +232,26 @@ export type SessionActivity = {
   tasks?: BackgroundTaskSummary[];
 };
 
+/**
+ * What a busy session is doing right now, as far as the rows it has already
+ * produced can tell. `tool` carries the tool's name and, when one can be read
+ * from its input, what it is working on (a path, a command, a pattern).
+ */
+export type LiveStage =
+  | { kind: 'thinking' }
+  | { kind: 'tool'; tool: string; target: string | null }
+  | { kind: 'toolResult' }
+  | { kind: 'permission'; tool: string }
+  | { kind: 'background' };
+
+/** The live status line at the end of the transcript: the current stage plus what the elapsed time and background labels need. */
+export type LiveActivity = {
+  stage: LiveStage;
+  /** When the turn started (client clock), for the elapsed time. */
+  startedAt: number;
+  tasks: BackgroundTaskSummary[];
+};
+
 /** Every busy session, keyed by session id. Read it to tell whether a session is busy; check `background` to tell how. */
 export type SessionActivityMap = ReadonlyMap<string, SessionActivity>;
 

@@ -4,6 +4,7 @@ import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'reac
 
 import type { BackgroundTaskSummary,
   ChatMessage,
+  LiveActivity,
   Project,
   ProjectSession,
   LLMProvider,
@@ -14,6 +15,7 @@ import { isToolGroupItem } from '@/modules/chat/utils/toolGrouping';
 import type { MessageListItem } from '@/modules/chat/utils/toolGrouping';
 import TranscriptVirtualList from '@/modules/chat/transcript/TranscriptVirtualList';
 import type { TranscriptListHandle, TranscriptRow } from '@/modules/chat/transcript/TranscriptVirtualList';
+import LiveActivityRow from '@/modules/chat/transcript/LiveActivityRow';
 import MessageComponent from '@/modules/chat/transcript/MessageComponent';
 import ProviderSelectionEmptyState from '@/modules/chat/transcript/ProviderSelectionEmptyState';
 import ToolGroupContainer from '@/modules/chat/transcript/ToolGroupContainer';
@@ -38,6 +40,8 @@ type ChatMessagesPaneProps = {
   isProcessing?: boolean;
   /** True while ChatComposer's floating activity/stop tab is rendered above the input. */
   hasActivityIndicator?: boolean;
+  /** What the running turn is doing right now; null when nothing is running, so no status line is drawn. */
+  liveActivity?: LiveActivity | null;
   chatMessages: ChatMessage[];
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
@@ -115,6 +119,7 @@ function ChatMessagesPane({
   isLoadingSessionMessages,
   isProcessing = false,
   hasActivityIndicator = false,
+  liveActivity = null,
   chatMessages,
   selectedSession,
   currentSessionId,
@@ -301,6 +306,7 @@ function ChatMessagesPane({
             renderRow={renderRow}
             resetKey={transcriptId}
             growsUpwardUntilRef={growsUpwardUntilRef}
+            tail={liveActivity ? <LiveActivityRow activity={liveActivity} /> : undefined}
             listRef={listRef}
             scrollContainerRef={scrollContainerRef}
             onAtBottomChange={onAtBottomChange}

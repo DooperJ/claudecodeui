@@ -11,11 +11,13 @@ import { TranscriptSessionContext } from '@/modules/chat/context/TranscriptSessi
 import { api } from '@/shared/api';
 import type {
   ChatMessage,
+  LiveActivity,
   Project,
   ProjectSession,
   SessionEstablishedContext,
   SessionNavigationOptions,
 } from '@/shared/types';
+import { describeLiveStage } from '@/modules/chat/utils/liveActivity';
 import { useChatProviderState } from '@/modules/chat/hooks/useChatProviderState';
 import { useScheduledMessages } from '@/modules/chat/composer/useScheduledMessages';
 import { useChatSessionState } from '@/modules/chat/hooks/useChatSessionState';
@@ -428,7 +430,21 @@ function ChatInterface({
   // Mirrors ChatComposer's own visibility check so the message pane can
   // reserve enough bottom space to keep the floating status tab from
   // overlapping the last message.
-  const hasActivityIndicator = Boolean(sessionActivity && pendingPermissionRequests.length === 0);
+  const hasActivityIndicator = Boolean(
+    sessionActivity?.canInterrupt && !sessionActivity.background && pendingPermissionRequests.length === 0,
+  );
+  const liveActivity = useMemo<LiveActivity | null>(() => (
+    sessionActivity
+      ? {
+        stage: describeLiveStage(chatMessages, {
+          background: Boolean(sessionActivity.background),
+          pendingPermissionTool: pendingPermissionRequests[0]?.toolName ?? null,
+        }),
+        startedAt: sessionActivity.startedAt,
+        tasks: sessionActivity.tasks ?? [],
+      }
+      : null
+  ), [chatMessages, pendingPermissionRequests, sessionActivity]);
 
   const selectedProviderLabel =
     provider === 'cursor'
@@ -477,6 +493,7 @@ function ChatInterface({
               isLoadingSessionMessages={isLoadingSessionMessages}
               isProcessing={isProcessing}
               hasActivityIndicator={hasActivityIndicator}
+              liveActivity={liveActivity}
               chatMessages={chatMessages}
               selectedSession={selectedSession}
               currentSessionId={currentSessionId}

@@ -415,5 +415,22 @@
     "syncNever": "Not synced yet",
     "syncFailed": "Sync failed: {{error}}. The previous list was kept.",
     "syncFailedRequest": "Unable to sync models."
+  },
+  "liveActivity": {
+    "thinking": "Thinking",
+    "toolResult": "Reading the result",
+    "permission": "Waiting for your approval: {{tool}}",
+    "background": "Background work",
+    "tool": {
+      "reading": "Reading",
+      "editing": "Editing",
+      "writing": "Writing",
+      "running": "Running",
+      "searching": "Searching",
+      "searchingWeb": "Searching the web",
+      "fetching": "Fetching",
+      "agent": "Running agent",
+      "using": "Using {{tool}}"
+    }
   }
 }

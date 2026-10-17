@@ -41,6 +41,8 @@ type TranscriptVirtualListProps<TItem> = {
    * what the reader is looking at even though the row spans the viewport.
    */
   growsUpwardUntilRef: RefObject<Map<string, number>>;
+  /** A row after the last one that belongs to no message (the live status line); absent when there is none. */
+  tail?: ReactNode;
   /** Space above the first row and below the last, in pixels. */
   paddingTop: number;
   paddingBottom: number;
@@ -83,20 +85,23 @@ export default function TranscriptVirtualList<TItem>({
   onScroll,
   onStartReached,
   growsUpwardUntilRef,
+  tail,
   paddingTop,
   paddingBottom,
 }: TranscriptVirtualListProps<TItem>) {
   const scrollerRef = scrollContainerRef;
   const canVirtualize = typeof ResizeObserver !== 'undefined';
 
-  const count = rows.length;
+  const count = rows.length + (tail ? 1 : 0);
   const averageRowHeightRef = useRef(INITIAL_ROW_ESTIMATE_PX);
   // The estimate a row was first laid out with. It must not change afterwards:
   // re-estimating rows that are not measured yet would resize everything below
   // them without any row actually changing, and nothing would compensate.
   const frozenEstimatesRef = useRef(new Map<string, number>());
 
-  const getItemKey = (index: number): string => rows[index]?.key ?? `transcript-row-${index}`;
+  const getItemKey = (index: number): string => (
+    index >= rows.length ? 'transcript-tail' : rows[index]?.key ?? `transcript-row-${index}`
+  );
 
   const virtualizer = useVirtualizer({
     count,
@@ -212,6 +217,7 @@ export default function TranscriptVirtualList<TItem>({
       >
         <div style={{ height: paddingTop }} />
         {rows.map((row) => <div key={row.key} data-item-key={row.key}>{renderRow(row)}</div>)}
+        {tail}
         <div style={{ height: paddingBottom }} />
       </div>
     );
@@ -225,7 +231,7 @@ export default function TranscriptVirtualList<TItem>({
     >
       <div style={{ height: virtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
         {virtualizer.getVirtualItems().map((virtualItem) => {
-          const row = rows[virtualItem.index];
+          const row = rows[virtualItem.index];   // undefined for the tail row
           return (
             <div
               key={virtualItem.key}
@@ -240,7 +246,7 @@ export default function TranscriptVirtualList<TItem>({
                 transform: `translateY(${virtualItem.start}px)`,
               }}
             >
-              {row ? renderRow(row) : null}
+              {row ? renderRow(row) : tail}
             </div>
           );
         })}
