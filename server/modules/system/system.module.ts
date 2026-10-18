@@ -51,6 +51,8 @@ function runShellCommand(
 export function createSystemModule(options: SystemModuleOptions): Router {
   const systemUpdateService = createSystemUpdateService({
     ...options,
+    // Off in this fork: see the service for why.
+    updatesEnabled: false,
     homeDirectory: os.homedir(),
     environment: process.env,
     runShellCommand,

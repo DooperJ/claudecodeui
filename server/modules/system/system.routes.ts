@@ -11,7 +11,8 @@ export function createSystemRouter(
   router.post('/update', async (_request, response, next) => {
     try {
       const result = await systemUpdateService.updateSystem();
-      response.status(result.success ? 200 : 500).json(result);
+      const status = result.success ? 200 : 'disabled' in result ? 403 : 500;
+      response.status(status).json(result);
     } catch (error) {
       next(error);
     }

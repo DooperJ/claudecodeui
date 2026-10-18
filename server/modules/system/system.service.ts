@@ -9,6 +9,8 @@ type SystemUpdateDependencies = {
   homeDirectory: string;
   installMode: 'git' | 'npm';
   isPlatform: boolean;
+  /** Whether the app may replace itself with the newest upstream release. */
+  updatesEnabled: boolean;
   environment: NodeJS.ProcessEnv;
   runShellCommand(
     command: string,
@@ -29,6 +31,16 @@ export function createSystemUpdateService(dependencies: SystemUpdateDependencies
   return {
     /** Selects and executes the correct update workflow for this installation. */
     async updateSystem() {
+      if (!dependencies.updatesEnabled) {
+        // The update command pulls the upstream project over the running
+        // checkout or package, which would discard this fork's changes.
+        return {
+          success: false as const,
+          disabled: true as const,
+          error: 'Updating from the app is turned off in this fork. Update it by merging the upstream release.',
+        };
+      }
+
       const updateCommand = dependencies.isPlatform
         ? 'npm run update:platform'
         : dependencies.installMode === 'git'

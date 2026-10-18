@@ -22,6 +22,12 @@ const compareVersions = (v1: string, v2: string) => {
   return 0;
 };
 
+/**
+ * Whether to look up the newest release of the upstream project. Off in this
+ * fork: its releases are not ours, so the banner would offer an upgrade that
+ * replaces the fork's changes with the upstream package.
+ */
+const UPDATE_CHECK_ENABLED = false;
 
 export const useVersionCheck = (owner: string, repo: string) => {
   const [updateAvailable, setUpdateAvailable] = useState(false);
@@ -56,6 +62,10 @@ export const useVersionCheck = (owner: string, repo: string) => {
   }, []);
 
   useEffect(() => {
+    if (!UPDATE_CHECK_ENABLED) {
+      return undefined;
+    }
+
     const checkVersion = async () => {
       try {
         const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/latest`);

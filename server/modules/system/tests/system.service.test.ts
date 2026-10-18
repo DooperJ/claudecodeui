@@ -13,6 +13,7 @@ function createDependencies(
     homeDirectory: '/home/cloudcli',
     installMode: 'git',
     isPlatform: false,
+    updatesEnabled: true,
     environment: { TEST_ENVIRONMENT: 'true' },
     runShellCommand: async () => ({ exitCode: 0, output: 'updated', errorOutput: '' }),
     logInfo: () => undefined,
@@ -115,4 +116,21 @@ test('process startup errors retain their message for the existing API contract'
     success: false,
     error: 'spawn sh failed',
   });
+});
+
+test('an app with updates turned off refuses to run any update command', async () => {
+  const calls: unknown[][] = [];
+  const service = createSystemUpdateService(createDependencies({
+    updatesEnabled: false,
+    runShellCommand: async (command) => {
+      calls.push([command]);
+      return { exitCode: 0, output: '', errorOutput: '' };
+    },
+  }));
+
+  const result = await service.updateSystem();
+
+  assert.deepEqual(calls, [], 'nothing is executed');
+  assert.equal(result.success, false);
+  assert.equal('disabled' in result && result.disabled, true);
 });
