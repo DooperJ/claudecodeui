@@ -13,5 +13,8 @@ export { providerModelSyncService } from './services/provider-model-sync.service
 // edited message's resume point, which only the providers module can read.
 export { sessionsService } from './services/sessions.service.js';
 
+// sessionTranscriptLocatorService: used by the server composition root to index a run's transcript the moment its provider id is known.
+export { sessionTranscriptLocatorService } from './services/session-transcript-locator.service.js';
+
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';

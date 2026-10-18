@@ -15,6 +15,7 @@ import {
     initializeSessionsWatcher,
     providerModelSyncService,
     providerRuntimeService,
+    sessionTranscriptLocatorService,
 } from '@/modules/providers/index.js';
 import { chatRunRegistry, createWebSocketServer } from '@/modules/websocket/index.js';
 
@@ -103,6 +104,9 @@ const agentRoutes = createAgentModule({
 // A completed run stays subscribable while its session's background work
 // (agents, workflows, backgrounded commands) is still reporting through it.
 chatRunRegistry.setRetentionGuard((sessionId) => providerRuntimeService.hasBackgroundWork(sessionId));
+// A run's transcript is indexed as soon as its provider id is known, so a page
+// refreshed during the first seconds of a new session still finds its history.
+chatRunRegistry.setProviderSessionObserver((sessionId) => sessionTranscriptLocatorService.indexWhenAvailable(sessionId));
 
 createWebSocketServer(server, {
     verifyClient: {

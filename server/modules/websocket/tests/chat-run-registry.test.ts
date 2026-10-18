@@ -311,3 +311,29 @@ test('startRun rejects a second concurrent run for the same session', async () =
     assert.ok(third);
   });
 });
+
+test('the provider-session observer fires once, when the provider id is first recorded', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-observer', 'claude', '/workspace/demo');
+    const observed: string[] = [];
+    chatRunRegistry.setProviderSessionObserver((sessionId) => observed.push(sessionId));
+
+    try {
+      const run = chatRunRegistry.startRun({
+        appSessionId: 'app-run-observer',
+        provider: 'claude',
+        providerSessionId: null,
+        connection: null,
+        userId: null,
+      });
+      assert.ok(run);
+
+      run.writer.setSessionId('claude-native-1');
+      run.writer.setSessionId('claude-native-1');
+
+      assert.deepEqual(observed, ['app-run-observer']);
+    } finally {
+      chatRunRegistry.setProviderSessionObserver(() => {});
+    }
+  });
+});

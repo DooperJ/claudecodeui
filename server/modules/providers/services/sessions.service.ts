@@ -7,6 +7,7 @@ import { broadcastSessionUpserted, chatRunRegistry } from '@/modules/websocket/i
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { listBusyClaudeCliSessions } from '@/modules/providers/services/claude-cli-liveness.service.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
+import { sessionTranscriptLocatorService } from '@/modules/providers/services/session-transcript-locator.service.js';
 import type {
   BackgroundTaskSummary,
   FetchHistoryOptions,
@@ -485,12 +486,21 @@ export const sessionsService = {
     sessionId: string,
     options: Pick<FetchHistoryOptions, 'limit' | 'offset'> = {},
   ): Promise<FetchHistoryResult> {
-    const session = sessionsDb.getSessionById(sessionId);
+    let session = sessionsDb.getSessionById(sessionId);
     if (!session) {
       throw new AppError(`Session "${sessionId}" was not found.`, {
         code: 'SESSION_NOT_FOUND',
         statusCode: 404,
       });
+    }
+
+    // A session that just started has its provider id before the filesystem
+    // watcher (a multi-second poll) has recorded where the transcript lives,
+    // and without a path the readers below return nothing. Look the file up by
+    // id so a refresh in that window still shows the conversation.
+    if (session.provider_session_id && !session.jsonl_path) {
+      await sessionTranscriptLocatorService.ensureIndexed(sessionId);
+      session = sessionsDb.getSessionById(sessionId) ?? session;
     }
 
     // App-created sessions that never produced a provider transcript yet

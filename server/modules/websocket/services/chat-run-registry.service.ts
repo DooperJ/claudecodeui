@@ -69,6 +69,13 @@ const runs = new Map<string, ChatRun>();
 let retainCompletedRun: (appSessionId: string) => boolean = () => false;
 
 /**
+ * Told when a run learns its provider-native session id. Set by the
+ * composition root to start locating the transcript the provider is about to
+ * write, so history is readable without waiting for the filesystem watcher.
+ */
+let onProviderSessionKnown: (appSessionId: string) => void = () => {};
+
+/**
  * Schedules one run's eviction. The timer is bound to the run it was armed
  * for: a later run can take the session's slot while this one's retention —
  * re-armed for as long as the guard holds — is still pending, and firing on
@@ -152,6 +159,7 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
 
   try {
     sessionsDb.assignProviderSessionId(run.appSessionId, providerSessionId);
+    onProviderSessionKnown(run.appSessionId);
     void broadcastSessionUpserted(run.appSessionId).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error('[ChatRunRegistry] Failed to broadcast canonical session mapping', {
@@ -182,6 +190,11 @@ export const chatRunRegistry = {
   /** Installs the check that keeps a completed run registered while its session still has background work. */
   setRetentionGuard(guard: (appSessionId: string) => boolean): void {
     retainCompletedRun = guard;
+  },
+
+  /** Installs the callback fired once per run when its provider-native session id is first recorded. */
+  setProviderSessionObserver(observer: (appSessionId: string) => void): void {
+    onProviderSessionKnown = observer;
   },
 
   /**
