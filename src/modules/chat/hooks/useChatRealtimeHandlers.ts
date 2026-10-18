@@ -170,6 +170,11 @@ export function useChatRealtimeHandlers({
         }
 
         case 'protocol_error': {
+          // A steering message that found no running turn is handled by the
+          // delivery hook (it goes back to the queue); it says nothing about the run.
+          if (msg.code === 'STEER_UNAVAILABLE') {
+            return;
+          }
           console.error('[Chat] Protocol error:', msg.code, msg.error);
           if (sid) {
             // Surface the failure in the conversation and stop the spinner —

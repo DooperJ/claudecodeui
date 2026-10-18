@@ -729,6 +729,11 @@ export type ProviderRuntimeContext = {
     interrupt(): Promise<void>;
     stopTask?(taskId: string): Promise<void>;
   };
+  /**
+   * How long a turn's result waits for a steering message that may still start
+   * a turn. Production leaves this unset; tests shorten it.
+   */
+  steerGraceMs?: number;
 };
 
 export type ProviderRunFunction = (

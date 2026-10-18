@@ -75,6 +75,8 @@ export type ProviderRuntimeGateway = {
   ): Promise<unknown>;
   abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
   stopBackgroundTask(provider: LLMProvider, sessionId: string, taskId: string): Promise<boolean>;
+  /** Hands a message to the turn running for the session without interrupting it; false when no turn can take it. */
+  steer(provider: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<boolean>;
   /** Whether a provider runtime still holds background work for the session after its turn ended. */
   hasBackgroundWork(sessionId: string): boolean;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
@@ -221,6 +223,23 @@ function emitUserMessageEvent(
 }
 
 /**
+ * The attachments a client may send with a message: only descriptors that point
+ * into the global upload store survive, without duplicates. Shared by every
+ * path that hands a client message to a provider runtime.
+ */
+function readVerifiedAttachments(clientOptions: AnyRecord): ChatAttachmentDescriptor[] {
+  const attachmentCandidates = [
+    ...normalizeAttachmentDescriptors(clientOptions.images),
+    ...normalizeAttachmentDescriptors(clientOptions.files),
+    ...normalizeAttachmentDescriptors(clientOptions.attachments),
+  ];
+  const verifiedAttachments = filterAttachmentsToUploadStore(attachmentCandidates);
+  return verifiedAttachments.filter(
+    (descriptor, index, all) => all.findIndex((candidate) => candidate.path === descriptor.path) === index,
+  );
+}
+
+/**
  * Handles `chat.send`: resolves the session row (provider, project path, and
  * provider-native id all come from the database — never from the client),
  * registers the run, and dispatches to the provider runtime.
@@ -355,15 +374,7 @@ async function dispatchRun(
     providerModelsService.setSessionEffort(provider, sessionId, clientOptions.effort);
   }
 
-  const attachmentCandidates = [
-    ...normalizeAttachmentDescriptors(clientOptions.images),
-    ...normalizeAttachmentDescriptors(clientOptions.files),
-    ...normalizeAttachmentDescriptors(clientOptions.attachments),
-  ];
-  const verifiedAttachments = filterAttachmentsToUploadStore(attachmentCandidates);
-  const uniqueAttachments = verifiedAttachments.filter(
-    (descriptor, index, all) => all.findIndex((candidate) => candidate.path === descriptor.path) === index,
-  );
+  const uniqueAttachments = readVerifiedAttachments(clientOptions);
 
   // The provider runtimes receive the stable app session id. When their
   // CLI/SDK needs the provider-native id for resume, they resolve it from the
@@ -415,6 +426,68 @@ async function dispatchRun(
   }
 
   return { started: true, error: failure };
+}
+
+/**
+ * Handles `chat.steer`: puts a message into the turn that is running for the
+ * session, without interrupting it, instead of queueing it for after the turn.
+ *
+ * Only a session with a running turn whose provider can take input mid-turn
+ * qualifies. Anything else is answered with `STEER_UNAVAILABLE` and the client
+ * sends the message the ordinary way (the turn usually ended a moment ago).
+ * Accepted messages get the same receipt and run event as `chat.send`.
+ */
+async function handleChatSteer(
+  ws: WebSocket,
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies
+): Promise<void> {
+  const clientMessageId = readClientMessageId(data);
+  const sessionId = readRequiredSessionId(data);
+  if (!sessionId) {
+    sendProtocolError(ws, 'SESSION_ID_REQUIRED', 'chat.steer requires a sessionId.', undefined, clientMessageId);
+    return;
+  }
+
+  // A retry of a message the server already took is answered again, never steered twice.
+  if (clientMessageId && chatRunRegistry.hasAcceptedClientMessage(sessionId, clientMessageId)) {
+    chatRunRegistry.attachConnection(sessionId, ws);
+    sendJson(ws, buildChatAcceptedFrame(sessionId, clientMessageId, true));
+    return;
+  }
+
+  const session = sessionsDb.getSessionById(sessionId);
+  const run = chatRunRegistry.getRun(sessionId);
+  const command = typeof data.content === 'string' ? data.content : '';
+  if (!session || !run || run.status !== 'running' || !command.trim()) {
+    sendProtocolError(ws, 'STEER_UNAVAILABLE', 'No running turn can take this message.', sessionId, clientMessageId);
+    return;
+  }
+
+  const provider = session.provider as LLMProvider;
+  const clientOptions = (data.options ?? {}) as AnyRecord;
+  const attachments = readVerifiedAttachments(clientOptions);
+
+  const taken = await dependencies.runtime.steer(provider, sessionId, command, {
+    images: attachments.filter(isImageAttachmentDescriptor),
+    files: attachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
+    cwd: clientOptions.cwd ?? session.project_path ?? undefined,
+  });
+  if (!taken) {
+    sendProtocolError(ws, 'STEER_UNAVAILABLE', 'No running turn can take this message.', sessionId, clientMessageId);
+    return;
+  }
+
+  if (clientMessageId) {
+    chatRunRegistry.rememberAcceptedClientMessage(sessionId, clientMessageId);
+    sendJson(ws, buildChatAcceptedFrame(sessionId, clientMessageId, false));
+  }
+  emitUserMessageEvent(run, {
+    clientMessageId: clientMessageId ?? `srv-${randomUUID()}`,
+    content: command,
+    attachments,
+    replacesAnchorId: '',
+  });
 }
 
 /**
@@ -696,6 +769,10 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
  *   The server answers an accepted message with `chat_accepted` and records
  *   it as the run's first event; a refused one gets a `protocol_error` that
  *   carries the same `clientMessageId`. Resending an accepted id is safe.
+ * - `chat.steer`               { sessionId, content, clientMessageId?, options? }
+ *   Hands a message to the turn that is running, without interrupting it.
+ *   Accepted like `chat.send`; when no turn can take it the client gets a
+ *   `protocol_error` with code `STEER_UNAVAILABLE` and sends it normally.
  * - `chat.abort`               { sessionId }
  * - `chat.stop-task`           { sessionId, taskId }
  * - `chat.subscribe`           { sessions: [{ sessionId, lastSeq? }] }
@@ -797,6 +874,9 @@ export function handleChatConnection(
           return;
         case 'chat.send':
           await handleChatSend(ws, userId, data, dependencies);
+          return;
+        case 'chat.steer':
+          await handleChatSteer(ws, data, dependencies);
           return;
         case 'chat.abort':
           await handleChatAbort(ws, data, dependencies);

@@ -1201,6 +1201,98 @@ export function useChatComposerState({
     setQueuedDraft(null);
   }, []);
 
+  // Queued drafts handed to the running turn, by clientMessageId, until the
+  // server takes them: if the turn had just ended, the draft goes back to the queue.
+  const steeredDraftsRef = useRef(new Map<string, QueuedDraft>());
+
+  /**
+   * Sends the queued message into the turn that is running, without waiting for
+   * it to finish and without interrupting it. The queue's stored copy is removed
+   * at once, since the server would otherwise send it again after the turn.
+   */
+  const steerQueuedDraft = useCallback(() => {
+    const targetSessionId = selectedSession?.id || currentSessionId || null;
+    if (!queuedDraft || !targetSessionId) {
+      return;
+    }
+
+    const uploadedAttachments = (queuedDraft.uploadedAttachments ?? []) as ChatAttachment[];
+    const clientMessageId = createClientMessageId();
+    const steerFrame = {
+      type: 'chat.steer',
+      sessionId: targetSessionId,
+      clientMessageId,
+      content: queuedDraft.content,
+      options: {
+        ...(queuedDraft.options ?? buildSendOptions(queuedDraft.content)),
+        attachments: uploadedAttachments,
+      },
+    };
+
+    if (!sendMessage(steerFrame)) {
+      addMessage({
+        type: 'error',
+        content: t('input.notSentDisconnected'),
+        timestamp: new Date(),
+      });
+      return;
+    }
+    trackSend(steerFrame, targetSessionId);
+    steeredDraftsRef.current.set(clientMessageId, queuedDraft);
+
+    addMessage({
+      type: 'user',
+      content: queuedDraft.content,
+      images: uploadedAttachments.filter(isImageAttachment),
+      files: uploadedAttachments.filter((attachment) => !isImageAttachment(attachment)),
+      timestamp: new Date(),
+      clientMessageId,
+      deliveryStatus: 'sending',
+    });
+
+    if (sessionKey) {
+      clearQueuedMessage(sessionKey);
+    }
+    queuedDraftSessionRef.current = sessionKey;
+    setQueuedDraft(null);
+    setIsUserScrolledUp(false);
+    setTimeout(() => scrollToBottom(), 100);
+  }, [
+    addMessage,
+    buildSendOptions,
+    currentSessionId,
+    queuedDraft,
+    scrollToBottom,
+    selectedSession?.id,
+    sendMessage,
+    sessionKey,
+    setIsUserScrolledUp,
+    t,
+    trackSend,
+  ]);
+
+  /**
+   * Puts a steering message the server could not hand to a running turn back in
+   * the queue, where it is sent the ordinary way. Does nothing when the user has
+   * queued something else meanwhile (that message keeps the slot; the refused
+   * text is put in the input so it is not lost).
+   */
+  const restoreSteeredDraft = useCallback((clientMessageId: string) => {
+    const draft = steeredDraftsRef.current.get(clientMessageId);
+    steeredDraftsRef.current.delete(clientMessageId);
+    if (!draft) {
+      return;
+    }
+
+    if (queuedDraft) {
+      setInput(draft.content);
+      inputValueRef.current = draft.content;
+      return;
+    }
+    queuedDraftSessionRef.current = sessionKey;
+    setQueuedDraft(draft);
+  }, [queuedDraft, sessionKey, setInput]);
+
   // A voice transcript either fills the input (to edit before sending) or, when the
   // user tapped "stop and send", is submitted straight away. Mirror the value into
   // inputValueRef synchronously so handleSubmit reads the new text, not the stale state.
@@ -1525,6 +1617,8 @@ export function useChatComposerState({
     queuedDraft,
     editQueuedDraft,
     deleteQueuedDraft,
+    steerQueuedDraft,
+    restoreSteeredDraft,
     handleVoiceTranscript,
     handleInputChange,
     handleKeyDown,

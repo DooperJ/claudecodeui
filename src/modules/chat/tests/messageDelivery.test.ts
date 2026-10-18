@@ -19,6 +19,8 @@ const lastStatus = (patches: Array<{ patch: unknown }>) =>
 const FRAME = { type: 'chat.send', sessionId: 's1', clientMessageId: 'cm-1', content: 'hi', options: {} };
 
 function setup(sendResult = true) {
+  const removed: Array<{ sessionId: string; id: string }> = [];
+  const steerRefused: string[] = [];
   let listener: ((event: ServerEvent) => void) | null = null;
   const patches: Array<{ sessionId: string; id: string; patch: unknown }> = [];
   const sent: unknown[] = [];
@@ -28,6 +30,7 @@ function setup(sendResult = true) {
 
   const sessionStore = {
     patchRealtimeMessage: (sessionId: string, id: string, patch: unknown) => patches.push({ sessionId, id, patch }),
+    removeRealtimeMessage: (sessionId: string, id: string) => removed.push({ sessionId, id }),
   } as unknown as SessionStore;
 
   const view = renderHook(() => useMessageDelivery({
@@ -36,6 +39,7 @@ function setup(sendResult = true) {
     sessionStore,
     onSessionProcessing: (sessionId) => { processing.push(String(sessionId)); },
     onSessionIdle: (sessionId) => { idled.push(String(sessionId)); },
+    onSteerRefused: (clientMessageId) => { steerRefused.push(clientMessageId); },
   }));
 
   return {
@@ -44,6 +48,8 @@ function setup(sendResult = true) {
     sent,
     idled,
     processing,
+    removed,
+    steerRefused,
     state,
     emit: (event: ServerEvent) => act(() => { listener?.(event); }),
   };
@@ -139,5 +145,19 @@ describe('useMessageDelivery', () => {
     ctx.emit({ kind: 'chat_accepted', sessionId: 's1', clientMessageId: 'cm-1', duplicate: true });
 
     assert.deepEqual(ctx.processing, []);
+  });
+
+  it('hands a steering message back to the queue instead of failing it when no turn took it', () => {
+    const ctx = setup();
+    const steer = { type: 'chat.steer', sessionId: 's1', clientMessageId: 'cm-steer', content: 'hi', options: {} };
+    act(() => ctx.view.result.current.trackSend(steer, 's1'));
+
+    ctx.emit({ kind: 'protocol_error', code: 'STEER_UNAVAILABLE', sessionId: 's1', clientMessageId: 'cm-steer' });
+    act(() => { vi.advanceTimersByTime(30_000); });
+
+    assert.deepEqual(ctx.removed, [{ sessionId: 's1', id: 'local_cm-steer' }], 'the optimistic row is dropped');
+    assert.deepEqual(ctx.steerRefused, ['cm-steer']);
+    assert.deepEqual(ctx.patches, [], 'it is not marked failed');
+    assert.deepEqual(ctx.idled, [], 'the session keeps whatever state it has');
   });
 });

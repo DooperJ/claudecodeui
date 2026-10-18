@@ -79,6 +79,15 @@ const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEO
 // forever. The timer resets on every message, so it measures silence, not total time.
 const BG_WAIT_CEILING_MS = 30 * 60 * 1000;
 
+/**
+ * How long a turn's `result` waits for a steering message that may still start
+ * a turn of its own. A steered message is normally taken into the running turn
+ * between tool calls, but when the model has no tool call left the CLI runs it
+ * as a new turn right after the `result`; closing stdin before that would lose
+ * it. That new turn begins within the same instant, so a short wait is enough.
+ */
+const STEER_GRACE_MS = 1500;
+
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
 // Ultracode is a session-scoped setting rather than an SDK effort level: it pairs xhigh
@@ -320,8 +329,10 @@ function mapCliOptionsToSDK(options = {}) {
  * @param {Object} queryInstance - SDK query instance
  * @param {Object} writer - WebSocket writer for reconnect support
  * @param {Function} releaseInput - Closes the held stdin stream so the CLI can exit
+ * @param {Function} pushInput - Appends a message to the held stdin stream while the turn runs
+ * @param {{ pending: number }} steering - Counts steering messages the run has not yet seen taken up
  */
-function addSession(sessionId, queryInstance, writer = null, releaseInput = null) {
+function addSession(sessionId, queryInstance, writer = null, releaseInput = null, pushInput = null, steering = null) {
   const existing = activeSessions.get(sessionId);
   // A different live instance under the same key means an earlier run was
   // superseded without being stopped (e.g. an abort that raced run setup and
@@ -352,7 +363,9 @@ function addSession(sessionId, queryInstance, writer = null, releaseInput = null
     status: 'active',
     writer,
     // Re-registered mid-run once the provider session id lands; keep the closer.
-    releaseInput: releaseInput || carried?.releaseInput || null
+    releaseInput: releaseInput || carried?.releaseInput || null,
+    pushInput: pushInput || carried?.pushInput || null,
+    steering: steering || carried?.steering || null
   });
   // The history reader reports a background agent as running or stopped by
   // whether this entry exists, and the cached history does not see this map.
@@ -872,21 +885,44 @@ async function buildPromptMessages(command, images, files, cwd) {
  * has to stay pending until we actually want the process gone.
  *
  * @param {Array<Object>} messages - SDKUserMessage records to send
- * @returns {{ stream: AsyncIterable, release: () => void }} Stream plus its closer
+ * @returns {{ stream: AsyncIterable, release: () => void, push: (message: Object) => boolean }} Stream, its closer, and a way to append messages while it is open
  */
 function createHeldPromptStream(messages) {
-  let release;
-  const held = new Promise((resolve) => { release = resolve; });
+  const pending = [...messages];
+  let wake = null;
+  let released = false;
 
   const stream = (async function* () {
-    for (const message of messages) {
-      yield message;
+    for (;;) {
+      while (pending.length > 0) {
+        yield pending.shift();
+      }
+      // Keeps stdin open — the CLI stays alive until release() is called.
+      if (released) {
+        return;
+      }
+      await new Promise((resolve) => { wake = resolve; });
+      wake = null;
     }
-    // Keeps stdin open — the CLI stays alive until release() is called.
-    await held;
   })();
 
-  return { stream, release };
+  return {
+    stream,
+    release: () => {
+      released = true;
+      wake?.();
+    },
+    // Adds a message for the CLI to read while the turn runs. False once the
+    // stream has been released: the process is on its way out and would drop it.
+    push: (message) => {
+      if (released) {
+        return false;
+      }
+      pending.push(message);
+      wake?.();
+      return true;
+    },
+  };
 }
 
 /**
@@ -978,7 +1014,13 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // Closes the held stdin stream so the CLI can wind down. Replaced once the
   // stream exists; the finally block calls it no matter how the run ends.
   let releasePromptStream = () => {};
+  let pushPromptInput = () => false;
+  // Steering messages pushed into this run that no turn has been seen to take up yet.
+  const steering = { pending: 0 };
   let idleReleaseTimer = null;
+  // A `result` waiting out the steering grace window (see STEER_GRACE_MS), and its timer.
+  let heldResult = false;
+  let steerGraceTimer = null;
   // The client is told the turn is over as soon as `result` lands, even though
   // the process lingers, so the UI never waits out the idle hold.
   let turnCompleteSent = false;
@@ -1168,6 +1210,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     const createQuery = context.createQuery ?? query;
     let heldPrompt = createHeldPromptStream(promptMessages);
     releasePromptStream = heldPrompt.release;
+    pushPromptInput = heldPrompt.push;
     try {
       queryInstance = createQuery({
         prompt: heldPrompt.stream,
@@ -1182,6 +1225,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       heldPrompt.release();
       heldPrompt = createHeldPromptStream(promptMessages);
       releasePromptStream = heldPrompt.release;
+      pushPromptInput = heldPrompt.push;
       queryInstance = createQuery({
         prompt: heldPrompt.stream,
         options: sdkOptions
@@ -1190,17 +1234,88 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
     // Track the query instance for abort capability
     if (sessionKey()) {
-      addSession(sessionKey(), queryInstance, ws, releasePromptStream);
+      addSession(sessionKey(), queryInstance, ws, releasePromptStream, pushPromptInput, steering);
     }
+
+    // Everything that follows a turn's `result`: tell the client the turn is
+    // over, then decide whether the process is held open for background work.
+    const finishTurn = () => {
+      // The turn is done as far as the client is concerned.
+      const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()) : false;
+      const stillOutstanding = backgroundWork.hasOutstanding(sessionKey());
+      if (!turnCompleteSent && !abortPending) {
+        turnCompleteSent = true;
+        ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
+        notifyRunStopped({
+          userId: ws?.userId || null,
+          provider: 'claude',
+          sessionId: sessionId || capturedSessionId || null,
+          sessionName: sessionSummary,
+          stopReason: 'completed'
+        });
+      } else if (heldForBackgroundWork && !abortPending && !stillOutstanding) {
+        // A result after the turn already reported complete means the work we
+        // held the process open for has finished and pushed a follow-up turn
+        // — the last of it, when nothing else is still running.
+        notifyBackgroundWorkCompleted({
+          userId: ws?.userId || null,
+          provider: 'claude',
+          sessionId: sessionId || capturedSessionId || null,
+          sessionName: sessionSummary
+        });
+      }
+      // Work started during this turn, or work from an earlier turn that
+      // has not settled yet (a follow-up turn reports one task in while
+      // another is still going), is still running. Hold the process open
+      // so it can finish and report back in a follow-up turn; the ceiling
+      // is only a backstop for work that never reports.
+      //
+      // The release when the last task settles is this same branch on the
+      // follow-up turn the CLI pushes for it, not the settling event
+      // itself: closing stdin at that moment would cut the turn that
+      // relays the task's result.
+      //
+      // When the turn reported its tasks, the tracker is the whole truth: an
+      // Agent call without `run_in_background` is scored as background by
+      // `startsBackgroundWork`, but the CLI runs it in the foreground and
+      // it has settled before this `result` — holding for it kept a process
+      // alive for the full ceiling with nothing outstanding.
+      const holdForTurn = sawTaskEventThisTurn ? stillOutstanding : backgroundWorkPending || stillOutstanding;
+      backgroundWorkPending = false;
+      sawTaskEventThisTurn = false;
+      if (holdForTurn) {
+        heldForBackgroundWork = true;
+        scheduleRelease();
+      } else {
+        // Either nothing was backgrounded, or the background work just
+        // reported in — let the CLI exit now, as it always has.
+        heldForBackgroundWork = false;
+        releasePromptStream();
+      }
+    };
 
     // Process streaming messages
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
     for await (const message of queryInstance) {
+      // The steering message started a turn of its own: the result held back
+      // belongs to the turn before it, and this new turn's result ends the run.
+      if (
+        heldResult
+        && ((message.type === 'system' && message.subtype === 'init')
+          || message.type === 'assistant'
+          || message.type === 'stream_event')
+      ) {
+        clearTimeout(steerGraceTimer);
+        steerGraceTimer = null;
+        heldResult = false;
+        steering.pending = 0;
+      }
+
       // Capture session ID from first message
       if (message.session_id && !capturedSessionId) {
 
         capturedSessionId = message.session_id;
-        addSession(sessionKey(), queryInstance, ws, releasePromptStream);
+        addSession(sessionKey(), queryInstance, ws, releasePromptStream, pushPromptInput, steering);
 
         // Set session ID on writer
         if (ws.setSessionId && typeof ws.setSessionId === 'function') {
@@ -1302,62 +1417,34 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       }
 
       if (message.type === 'result') {
-        // The turn is done as far as the client is concerned.
-        const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()) : false;
-        const stillOutstanding = backgroundWork.hasOutstanding(sessionKey());
-        if (!turnCompleteSent && !abortPending) {
-          turnCompleteSent = true;
-          ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
-          notifyRunStopped({
-            userId: ws?.userId || null,
-            provider: 'claude',
-            sessionId: sessionId || capturedSessionId || null,
-            sessionName: sessionSummary,
-            stopReason: 'completed'
-          });
-        } else if (heldForBackgroundWork && !abortPending && !stillOutstanding) {
-          // A result after the turn already reported complete means the work we
-          // held the process open for has finished and pushed a follow-up turn
-          // — the last of it, when nothing else is still running.
-          notifyBackgroundWorkCompleted({
-            userId: ws?.userId || null,
-            provider: 'claude',
-            sessionId: sessionId || capturedSessionId || null,
-            sessionName: sessionSummary
-          });
-        }
-        // Work started during this turn, or work from an earlier turn that
-        // has not settled yet (a follow-up turn reports one task in while
-        // another is still going), is still running. Hold the process open
-        // so it can finish and report back in a follow-up turn; the ceiling
-        // is only a backstop for work that never reports.
-        //
-        // The release when the last task settles is this same branch on the
-        // follow-up turn the CLI pushes for it, not the settling event
-        // itself: closing stdin at that moment would cut the turn that
-        // relays the task's result.
-        //
-        // When the turn reported its tasks, the tracker is the whole truth: an
-        // Agent call without `run_in_background` is scored as background by
-        // `startsBackgroundWork`, but the CLI runs it in the foreground and
-        // it has settled before this `result` — holding for it kept a process
-        // alive for the full ceiling with nothing outstanding.
-        const holdForTurn = sawTaskEventThisTurn ? stillOutstanding : backgroundWorkPending || stillOutstanding;
-        backgroundWorkPending = false;
-        sawTaskEventThisTurn = false;
-        if (holdForTurn) {
-          heldForBackgroundWork = true;
-          scheduleRelease();
+        if (steering.pending > 0 && !(sessionKey() && abortedSessionIds.has(sessionKey()))) {
+          // A steering message may still start a turn of its own right after
+          // this result. Hold the result back briefly: if a turn does begin,
+          // that turn's result is the one that ends the run.
+          heldResult = true;
+          steerGraceTimer = setTimeout(() => {
+            steerGraceTimer = null;
+            heldResult = false;
+            steering.pending = 0;
+            finishTurn();
+          }, context.steerGraceMs ?? STEER_GRACE_MS);
+          steerGraceTimer.unref?.();
         } else {
-          // Either nothing was backgrounded, or the background work just
-          // reported in — let the CLI exit now, as it always has.
-          heldForBackgroundWork = false;
-          releasePromptStream();
+          finishTurn();
         }
       } else if (idleReleaseTimer) {
         // Background activity after the turn — push the countdown back out.
         scheduleRelease();
       }
+    }
+
+    // The stream ended while a result was still waiting out the grace window.
+    if (heldResult) {
+      clearTimeout(steerGraceTimer);
+      steerGraceTimer = null;
+      heldResult = false;
+      steering.pending = 0;
+      finishTurn();
     }
 
     // Clean up session on completion — only while this run still owns the map
@@ -1439,6 +1526,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       clearTimeout(idleReleaseTimer);
       idleReleaseTimer = null;
     }
+    if (steerGraceTimer) {
+      clearTimeout(steerGraceTimer);
+      steerGraceTimer = null;
+    }
     releasePromptStream();
   }
 }
@@ -1512,6 +1603,41 @@ async function stopClaudeSDKTask(sessionId, taskId) {
     return false;
   }
   await session.instance.stopTask(taskId);
+  return true;
+}
+
+/**
+ * Sends a message into a turn that is still running, without interrupting it.
+ *
+ * The CLI takes the message in between tool calls, so the model sees it at its
+ * next step; when no tool call is left it runs the message as the next turn.
+ * Resolves false when there is no live run to take it (the turn already ended,
+ * so the caller should send it as an ordinary message instead).
+ * @param {string} sessionId - App session identifier
+ * @param {string} command - The steering text
+ * @param {Object} options - `images`, `files` and `cwd`, as for a normal send
+ * @returns {Promise<boolean>} True when the message was handed to the running process
+ */
+async function steerClaudeSDKSession(sessionId, command, options = {}) {
+  const session = getSession(sessionId);
+  if (!session || session.status !== 'active' || !session.pushInput || !session.steering) {
+    return false;
+  }
+
+  const messages = await buildPromptMessages(command, options.images, options.files, options.cwd);
+
+  // The run may have ended or been replaced while attachments were prepared.
+  if (getSession(sessionId) !== session || session.status !== 'active') {
+    return false;
+  }
+
+  // Counted before the push so a `result` that lands right after it already
+  // knows a message is on its way.
+  session.steering.pending += 1;
+  if (!messages.every((message) => session.pushInput(message))) {
+    session.steering.pending = Math.max(0, session.steering.pending - 1);
+    return false;
+  }
   return true;
 }
 
@@ -1594,6 +1720,7 @@ export const claudeRuntime = {
   },
   listBackgroundWork: listClaudeSDKBackgroundWork,
   stopBackgroundTask: stopClaudeSDKTask,
+  steer: steerClaudeSDKSession,
 };
 
 // Export public API
@@ -1602,6 +1729,7 @@ export {
   abortClaudeSDKSession,
   listClaudeSDKBackgroundWork,
   stopClaudeSDKTask,
+  steerClaudeSDKSession,
   isClaudeSDKSessionActive,
   getClaudeSDKSessionStartTime,
   getActiveClaudeSDKSessions,

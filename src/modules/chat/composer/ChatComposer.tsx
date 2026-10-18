@@ -84,6 +84,8 @@ type ChatComposerProps = {
   onCancelScheduledMessage: (id: string) => void;
   onEditQueuedDraft: () => void;
   onDeleteQueuedDraft: () => void;
+  /** Sends the queued message into the running turn; absent when the session cannot take one. */
+  onSteerQueuedDraft?: () => void;
   attachedFiles: File[];
   onRemoveAttachment: (index: number) => void;
   fileErrors: Map<string, string>;
@@ -159,6 +161,7 @@ export default function ChatComposer({
   onCancelScheduledMessage,
   onEditQueuedDraft,
   onDeleteQueuedDraft,
+  onSteerQueuedDraft,
   attachedFiles,
   onRemoveAttachment,
   fileErrors,
@@ -328,6 +331,7 @@ export default function ChatComposer({
           }
           onEdit={onEditQueuedDraft}
           onDelete={onDeleteQueuedDraft}
+          onSteer={onSteerQueuedDraft}
         />
       )}
 

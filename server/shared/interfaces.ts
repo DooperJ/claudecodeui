@@ -52,6 +52,12 @@ export interface IProviderRuntime {
    * settled, or the id was never one of its own.
    */
   stopBackgroundTask?(sessionId: string, taskId: string): Promise<boolean>;
+  /**
+   * Hands a message to the turn that is running for the session, without
+   * interrupting it. Only a runtime whose process takes input while a turn runs
+   * implements this; resolves false when there is no running turn to take it.
+   */
+  steer?(sessionId: string, command: string, options: AnyRecord): Promise<boolean>;
 }
 
 /**

@@ -192,12 +192,17 @@ function ChatInterface({
 
   // Follows each sent message to the server's acknowledgement; the composer
   // registers sends here and a transcript row's retry button resends through it.
+  // A steering message the server could not hand to a running turn goes back
+  // to the composer's queue; the composer is created after this hook, so the
+  // handler is filled in once it exists.
+  const steerRefusedRef = useRef<(clientMessageId: string) => void>(() => undefined);
   const { trackSend, retrySend } = useMessageDelivery({
     subscribe,
     sendMessage,
     sessionStore,
     onSessionProcessing,
     onSessionIdle,
+    onSteerRefused: (clientMessageId) => steerRefusedRef.current(clientMessageId),
   });
   const messageDeliveryValue = useMemo(() => ({ retrySend }), [retrySend]);
 
@@ -235,6 +240,8 @@ function ChatInterface({
     queuedDraft,
     editQueuedDraft,
     deleteQueuedDraft,
+    steerQueuedDraft,
+    restoreSteeredDraft,
     handleVoiceTranscript,
     handleInputChange,
     handleKeyDown,
@@ -415,6 +422,16 @@ function ChatInterface({
     pendingPermissionRequests,
     handlePermissionDecision,
   }), [pendingPermissionRequests, handlePermissionDecision]);
+
+  useEffect(() => {
+    steerRefusedRef.current = restoreSteeredDraft;
+  }, [restoreSteeredDraft]);
+
+  // Only Claude's process takes input while a turn runs, and only a running
+  // turn (not background work left after it) has a task to fold a message into.
+  const canSteerQueuedDraft = provider === 'claude'
+    && Boolean(sessionActivity?.canInterrupt)
+    && !sessionActivity?.background;
 
   // Lets a question card answer by message and recognise an answer already given.
   const questionReplyValue = useMemo<QuestionReplyContextValue>(() => ({
@@ -619,6 +636,7 @@ function ChatInterface({
           onResolveBackgroundSendPrompt={resolveBackgroundSendPrompt}
           onEditQueuedDraft={editQueuedDraft}
           onDeleteQueuedDraft={deleteQueuedDraft}
+          onSteerQueuedDraft={canSteerQueuedDraft ? steerQueuedDraft : undefined}
           attachedFiles={attachedFiles}
           onRemoveAttachment={(index) =>
             setAttachedFiles((previous) =>

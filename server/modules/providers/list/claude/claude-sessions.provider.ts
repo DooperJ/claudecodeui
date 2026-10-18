@@ -1273,6 +1273,22 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       return [createNormalizedMessage({ kind: 'stream_end', sessionId, provider: PROVIDER })];
     }
 
+    // A message the user sent while the turn was running is recorded as a
+    // `queued_command` attachment, not as a user row, because the CLI folded it
+    // into the turn between two tool calls. To the reader it is still the
+    // user's message, so it is read as one.
+    if (
+      raw.type === 'attachment'
+      && raw.attachment?.type === 'queued_command'
+      && raw.attachment.commandMode === 'prompt'
+      && raw.attachment.prompt
+    ) {
+      return this.normalizeMessageRows(
+        { ...raw, type: 'user', message: { role: 'user', content: raw.attachment.prompt }, attachment: undefined },
+        sessionId,
+      );
+    }
+
     const messages: NormalizedMessage[] = [];
     const ts = raw.timestamp || new Date().toISOString();
     const baseId = raw.uuid || generateMessageId('claude');

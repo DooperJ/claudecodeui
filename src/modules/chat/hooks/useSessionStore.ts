@@ -794,6 +794,20 @@ export function useSessionStore() {
   }, [getSlot, notify]);
 
   /**
+   * Drops one live row. Used for a sent message the server did not take after
+   * all (a steering message refused because its turn had just ended), whose
+   * text goes back to the queue instead of staying in the transcript.
+   */
+  const removeRealtimeMessage = useCallback((sessionId: string, messageId: string) => {
+    const slot = getSlot(sessionId);
+    if (!slot.realtimeMessages.some((message) => message.id === messageId)) return;
+
+    slot.realtimeMessages = slot.realtimeMessages.filter((message) => message.id !== messageId);
+    recomputeMergedIfNeeded(slot);
+    notify(sessionId);
+  }, [getSlot, notify]);
+
+  /**
    * Refreshes only the persisted tail and stitches it onto the contiguous
    * cached suffix. Large turns request a small offset bridge rather than the
    * whole transcript, and the final state is applied atomically.
@@ -901,6 +915,7 @@ export function useSessionStore() {
     fetchMore,
     appendRealtime,
     patchRealtimeMessage,
+    removeRealtimeMessage,
     truncateAt,
     refreshLatestFromServer,
     setActiveSession,
@@ -910,7 +925,7 @@ export function useSessionStore() {
     getMessages,
     getSessionSlot,
   }), [
-    fetchFromServer, fetchMore, appendRealtime, patchRealtimeMessage, truncateAt, refreshLatestFromServer,
+    fetchFromServer, fetchMore, appendRealtime, patchRealtimeMessage, removeRealtimeMessage, truncateAt, refreshLatestFromServer,
     setActiveSession, isStale, updateStreaming, finalizeStreaming,
     getMessages, getSessionSlot,
   ]);

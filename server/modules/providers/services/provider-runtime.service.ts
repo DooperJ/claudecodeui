@@ -97,6 +97,12 @@ export function createProviderRuntimeService(
       return Boolean(await runtime.stopBackgroundTask?.(sessionId, taskId));
     },
 
+    async steer(providerName: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<boolean> {
+      // A runtime that cannot take input mid-turn has nothing to steer.
+      const { runtime } = dependencies.resolveProvider(providerName);
+      return Boolean(await runtime.steer?.(sessionId, command, options));
+    },
+
     hasBackgroundWork(sessionId: string): boolean {
       return dependencies.listProviders().some((provider) =>
         (provider.runtime.listBackgroundWork?.() ?? []).some((entry) => entry.sessionId === sessionId));

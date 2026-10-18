@@ -1,22 +1,26 @@
 import { useTranslation } from 'react-i18next';
-import { PencilIcon, XIcon } from 'lucide-react';
+import { CornerDownRightIcon, PencilIcon, XIcon } from 'lucide-react';
 
 type QueuedMessageCardProps = {
   content: string;
   attachmentCount?: number;
   onEdit: () => void;
   onDelete: () => void;
+  /** Sends the message into the running turn now; absent when the session cannot take one. */
+  onSteer?: () => void;
 };
 
 /**
  * Rendered by chat's ChatComposer to show the message queued for a busy
- * session, with edit and delete actions before it is auto-sent.
+ * session, with edit and delete actions before it is auto-sent, and — where
+ * the provider allows it — an action that sends it into the running turn now.
  */
 export default function QueuedMessageCard({
   content,
   attachmentCount = 0,
   onEdit,
   onDelete,
+  onSteer,
 }: QueuedMessageCardProps) {
   const { t } = useTranslation('chat');
 
@@ -41,6 +45,18 @@ export default function QueuedMessageCard({
         </div>
 
         <div className="flex shrink-0 items-center gap-0.5">
+          {onSteer && (
+            <button
+              type="button"
+              onClick={onSteer}
+              aria-label={t('input.queue.steer', { defaultValue: 'Send now without interrupting' })}
+              title={t('input.queue.steerHint', { defaultValue: 'Send now, into the running task, without interrupting it' })}
+              className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
+            >
+              <CornerDownRightIcon className="h-3.5 w-3.5" />
+              {t('input.queue.steerLabel', { defaultValue: 'Steer' })}
+            </button>
+          )}
           <button
             type="button"
             onClick={onEdit}

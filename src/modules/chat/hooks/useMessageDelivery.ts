@@ -24,6 +24,12 @@ type UseMessageDeliveryArgs = {
   sessionStore: SessionStore;
   onSessionProcessing?: MarkSessionProcessing;
   onSessionIdle?: MarkSessionIdle;
+  /**
+   * Told when the server could not hand a steering message to a running turn
+   * (it ended a moment ago). The message is not failed: the caller puts it
+   * back in the queue, where it is sent the ordinary way.
+   */
+  onSteerRefused?: (clientMessageId: string) => void;
 };
 
 /**
@@ -42,6 +48,7 @@ export function useMessageDelivery({
   sessionStore,
   onSessionProcessing,
   onSessionIdle,
+  onSteerRefused,
 }: UseMessageDeliveryArgs) {
   // Unacknowledged sends by clientMessageId. A ref because the socket listener
   // and timers read it synchronously and nothing renders from it; the visible
@@ -50,8 +57,8 @@ export function useMessageDelivery({
 
   // The latest callbacks, so the long-lived listener and timers never act on a
   // stale closure.
-  const latestRef = useRef({ sendMessage, sessionStore, onSessionProcessing, onSessionIdle });
-  latestRef.current = { sendMessage, sessionStore, onSessionProcessing, onSessionIdle };
+  const latestRef = useRef({ sendMessage, sessionStore, onSessionProcessing, onSessionIdle, onSteerRefused });
+  latestRef.current = { sendMessage, sessionStore, onSessionProcessing, onSessionIdle, onSteerRefused };
 
   const patchRow = useCallback((clientMessageId: string, sessionId: string, deliveryStatus: 'sending' | 'failed' | undefined) => {
     latestRef.current.sessionStore.patchRealtimeMessage(sessionId, `local_${clientMessageId}`, { deliveryStatus });
@@ -123,6 +130,16 @@ export function useMessageDelivery({
       }
 
       if (event.kind === 'protocol_error' && clientMessageId && pendingSends.has(clientMessageId)) {
+        const pending = pendingSends.get(clientMessageId);
+        if (event.code === 'STEER_UNAVAILABLE' && pending) {
+          // Not a failure: the turn it was meant for is gone. The run state is
+          // whatever it is, so the session is left alone.
+          if (pending.timer) clearTimeout(pending.timer);
+          pendingSends.delete(clientMessageId);
+          latestRef.current.sessionStore.removeRealtimeMessage(pending.sessionId, `local_${clientMessageId}`);
+          latestRef.current.onSteerRefused?.(clientMessageId);
+          return;
+        }
         markFailed(clientMessageId, true);
         return;
       }

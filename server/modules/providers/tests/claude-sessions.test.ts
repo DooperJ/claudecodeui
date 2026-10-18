@@ -2189,3 +2189,35 @@ test('synchronizeFile skips non-jsonl files', { concurrency: false }, async () =
     assert.equal(result, null);
   });
 });
+
+test('Claude history shows a message the user sent mid-turn as the user message it is', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'claude-steered-'));
+
+  try {
+    // The CLI records a message folded into a running turn as a
+    // `queued_command` attachment, between the tool call and its next step.
+    const rows = [
+      { type: 'user', uuid: 'u1', parentUuid: null, sessionId: SESSION_ID, cwd: tempRoot, timestamp: '2026-10-18T00:00:00.000Z', message: { role: 'user', content: 'run the checks' } },
+      { type: 'assistant', uuid: 'a1', parentUuid: 'u1', sessionId: SESSION_ID, timestamp: '2026-10-18T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'sleep 3' } }] } },
+      { type: 'attachment', uuid: 'q1', parentUuid: 'a1', sessionId: SESSION_ID, timestamp: '2026-10-18T00:00:02.000Z', attachment: { type: 'queued_command', prompt: 'also end with DONE', commandMode: 'prompt', source_uuid: 's', delivery_id: 'd' } },
+      { type: 'user', uuid: 'u2', parentUuid: 'q1', sessionId: SESSION_ID, timestamp: '2026-10-18T00:00:03.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' }] } },
+      { type: 'assistant', uuid: 'a2', parentUuid: 'u2', sessionId: SESSION_ID, timestamp: '2026-10-18T00:00:04.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'finished DONE' }] } },
+    ];
+    const filePath = path.join(tempRoot, `${SESSION_ID}.jsonl`);
+    await writeFile(filePath, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+
+    await withIsolatedDatabase(async () => {
+      const now = new Date().toISOString();
+      sessionsDb.createSession(SESSION_ID, 'claude', tempRoot, 'Steered session', now, now, filePath);
+
+      const history = await new ClaudeSessionsProvider().fetchHistory(SESSION_ID, { providerSessionId: SESSION_ID });
+      const userTexts = history.messages
+        .filter((message) => message.kind === 'text' && message.role === 'user')
+        .map((message) => message.content);
+
+      assert.deepEqual(userTexts, ['run the checks', 'also end with DONE']);
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
