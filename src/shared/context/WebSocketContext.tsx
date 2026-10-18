@@ -25,6 +25,13 @@ type WebSocketContextType = {
    */
   sendMessage: (message: unknown) => boolean;
   /**
+   * Resolves `true` as soon as the socket is open, `false` if it is not open
+   * within `timeoutMs`. A socket that is down is replaced right away instead of
+   * waiting out the retry timer, so a message sent just as the page returns
+   * from the background goes out as soon as the new connection opens.
+   */
+  waitForConnection: (timeoutMs?: number) => Promise<boolean>;
+  /**
    * Subscribes to every websocket frame. Returns an unsubscribe function.
    *
    * This is the primary consumption API: events are dispatched synchronously
@@ -50,6 +57,9 @@ type WebSocketContextType = {
  * connection); longer ones are where mobile browsers silently drop it.
  */
 const BACKGROUND_SOCKET_DISTRUST_MS = 15_000;
+
+/** How long a send waits for the socket to come back before it gives up and keeps the text in the composer. */
+const CONNECT_WAIT_MS = 6_000;
 
 const WebSocketContext = createContext<WebSocketContextType | null>(null);
 
@@ -82,6 +92,10 @@ const useWebSocketProviderState = (): WebSocketContextType => {
    * re-renders of the provider tree.
    */
   const listenersRef = useRef(new Set<ServerEventListener>());
+  // Callers of `waitForConnection` that are still waiting for the socket to
+  // open. A ref because `onopen` resolves them synchronously and nothing
+  // renders from it.
+  const connectionWaitersRef = useRef(new Set<(connected: boolean) => void>());
   // Drives `isConnected` and the workspace header's "Reconnecting" indicator.
   // Three values rather than a boolean: a first handshake still in flight must
   // not read as a lost connection, or every page load would flash the indicator.
@@ -122,6 +136,11 @@ const useWebSocketProviderState = (): WebSocketContextType => {
           dispatch({ kind: 'websocket_reconnected', timestamp: Date.now() });
         }
         hasConnectedRef.current = true;
+        // After the reconnect dispatch, so listeners resubscribe before a
+        // waiting send goes out.
+        for (const settle of [...connectionWaitersRef.current]) {
+          settle(true);
+        }
       };
 
       websocket.onmessage = (event) => {
@@ -239,6 +258,28 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     connect();
   }, [connect]);
 
+  const waitForConnection = useCallback((timeoutMs: number = CONNECT_WAIT_MS) => new Promise<boolean>((resolve) => {
+    const waiters = connectionWaitersRef.current;
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      resolve(true);
+      return;
+    }
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const settle = (connected: boolean) => {
+      if (timer) clearTimeout(timer);
+      waiters.delete(settle);
+      resolve(connected);
+    };
+    timer = setTimeout(() => settle(false), timeoutMs);
+    waiters.add(settle);
+
+    // A handshake already under way is the connection being waited for.
+    if (wsRef.current?.readyState !== WebSocket.CONNECTING) {
+      reconnectNow();
+    }
+  }), [reconnectNow]);
+
   useEffect(() => {
     const handleReturn = () => {
       const socket = wsRef.current;
@@ -292,10 +333,11 @@ const useWebSocketProviderState = (): WebSocketContextType => {
   ({
     ws: wsRef.current,
     sendMessage,
+    waitForConnection,
     subscribe,
     isConnected: connectionStatus === 'connected',
     connectionStatus,
-  }), [sendMessage, subscribe, connectionStatus]);
+  }), [sendMessage, waitForConnection, subscribe, connectionStatus]);
 
   return value;
 };

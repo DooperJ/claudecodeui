@@ -53,6 +53,13 @@ type UseChatComposerStateArgs = {
   sendMessage: (message: unknown) => boolean;
   /** Starts following a frame that was just written to the socket until the server acknowledges it. */
   trackSend: (frame: Record<string, unknown>, sessionId: string) => void;
+  /**
+   * Waits a few seconds for the socket to come back, resolving false when it
+   * does not. A send that finds the socket down waits here once before giving
+   * up, which covers the moment a phone or Safari tab returns from the
+   * background. Absent, a send on a dead socket fails at once.
+   */
+  waitForConnection?: () => Promise<boolean>;
   sendByCtrlEnter?: boolean;
   onSessionProcessing?: MarkSessionProcessing;
   /**
@@ -207,6 +214,7 @@ export function useChatComposerState({
   tokenBudget,
   sendMessage,
   trackSend,
+  waitForConnection,
   sendByCtrlEnter,
   onSessionProcessing,
   onSessionEstablished,
@@ -997,7 +1005,11 @@ export function useChatComposerState({
       // dropped connection used to swallow the message while the transcript
       // already displayed it and the spinner ran; now the text stays in the
       // composer and the user is told.
-      if (!sendMessage(sendFrame)) {
+      // A socket that is merely reconnecting is waited for briefly before the
+      // send is given up on, so the usual "came back to the tab" case just works.
+      const delivered = sendMessage(sendFrame)
+        || (waitForConnection ? (await waitForConnection()) && sendMessage(sendFrame) : false);
+      if (!delivered) {
         if (queuedSubmission) {
           queuedDraftSessionRef.current = sessionKey;
           setQueuedDraft(queuedSubmission);
@@ -1078,6 +1090,7 @@ export function useChatComposerState({
       selectedProject,
       sendMessage,
       trackSend,
+      waitForConnection,
       sessionKey,
       addMessage,
       setIsUserScrolledUp,

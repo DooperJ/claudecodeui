@@ -17,7 +17,8 @@ import type { ChatMessage, PermissionMode, Project, ProjectSession } from '@/sha
 const PROJECT: Project = { projectId: 'project-1', displayName: 'Project One', fullPath: '/tmp/project-one' };
 const SESSION = { id: 'session-1', title: 'Existing' } as ProjectSession;
 
-function renderComposer(socketOpen: boolean) {
+function renderComposer(socketOpen: boolean, waitForConnection?: () => Promise<boolean>, openAfterWait = false) {
+  let open = socketOpen;
   const sentFrames: Array<Record<string, unknown>> = [];
   const tracked: Array<Record<string, unknown>> = [];
   const added: ChatMessage[] = [];
@@ -38,11 +39,14 @@ function renderComposer(socketOpen: boolean) {
       canAbortSession: false,
       tokenBudget: null,
       sendMessage: (message) => {
-        if (!socketOpen) return false;
+        if (!open) return false;
         sentFrames.push(message as Record<string, unknown>);
         return true;
       },
       trackSend: (frame) => { tracked.push(frame); },
+      waitForConnection: waitForConnection
+        ? async () => { const connected = await waitForConnection(); if (connected && openAfterWait) open = true; return connected; }
+        : undefined,
       onSessionProcessing: (sessionId) => { processing.push(String(sessionId)); },
       scrollToBottom: () => undefined,
       addMessage: (message) => { added.push(message); },
@@ -92,4 +96,28 @@ test('a delivered send carries a clientMessageId, is tracked, and shows as sendi
   assert.equal(userRow?.deliveryStatus, 'sending');
   assert.deepEqual(processing, ['session-1']);
   assert.equal(view.result.current.input, '', 'the composer is cleared once the frame is out');
+});
+
+test('a send that finds the socket reconnecting waits for it and then goes out', async () => {
+  const { view, sentFrames, tracked, added } = renderComposer(false, async () => true, true);
+  await act(async () => { view.result.current.setInput('hello'); });
+
+  await act(async () => { await view.result.current.handleSubmit({ preventDefault: () => undefined } as never); });
+
+  assert.equal(sentFrames.length, 1, 'sent once the connection returned');
+  assert.equal(tracked.length, 1);
+  assert.equal(added.some((message) => message.type === 'error'), false);
+  assert.equal(view.result.current.input, '');
+});
+
+test('a send whose wait for the socket runs out behaves like a send on a dead connection', async () => {
+  const { view, sentFrames, added, processing } = renderComposer(false, async () => false);
+  await act(async () => { view.result.current.setInput('hello'); });
+
+  await act(async () => { await view.result.current.handleSubmit({ preventDefault: () => undefined } as never); });
+
+  assert.deepEqual(sentFrames, []);
+  assert.deepEqual(processing, []);
+  assert.equal(view.result.current.input, 'hello');
+  assert.deepEqual(added.map((message) => message.type), ['error']);
 });

@@ -204,3 +204,103 @@ test('signing out while connected stops reporting a live connection', () => {
   assert.equal(lastStatus(), 'connecting');
   assert.equal(isConnected, false, 'isConnected no longer reports the closed socket as live');
 });
+
+/**
+ * Sending on a socket that is down: `sendMessage` says whether the frame went
+ * out, and `waitForConnection` lets a send ride out a reconnect that is already
+ * on its way instead of failing during the few seconds it takes.
+ */
+type SocketApi = ReturnType<typeof useWebSocket>;
+
+function renderWithApi() {
+  const api: { current: SocketApi | null } = { current: null };
+  function Capture() {
+    api.current = useWebSocket();
+    return null;
+  }
+  render(<WebSocketProvider><Capture /></WebSocketProvider>);
+  return () => api.current as SocketApi;
+}
+
+test('sendMessage reports whether the frame reached an open socket', () => {
+  const getApi = renderWithApi();
+  assert.equal(getApi().sendMessage({ type: 'x' }), false, 'still handshaking');
+
+  act(() => socket(0).serverOpens());
+  assert.equal(getApi().sendMessage({ type: 'x' }), true);
+
+  act(() => socket(0).serverDrops());
+  assert.equal(getApi().sendMessage({ type: 'x' }), false, 'dropped');
+});
+
+test('waitForConnection replaces a dropped socket at once and resolves when it opens', async () => {
+  const getApi = renderWithApi();
+  act(() => socket(0).serverOpens());
+  act(() => socket(0).serverDrops());
+  assert.equal(FakeWebSocket.instances.length, 1);
+
+  let result: boolean | null = null;
+  act(() => { void getApi().waitForConnection(6000).then((connected) => { result = connected; }); });
+
+  // No 3 second retry timer: the wait itself starts the new socket.
+  assert.equal(FakeWebSocket.instances.length, 2);
+  assert.equal(result, null);
+
+  await act(async () => { socket(1).serverOpens(); });
+  assert.equal(result, true);
+});
+
+test('waitForConnection gives up with false when the socket does not come back in time', async () => {
+  const getApi = renderWithApi();
+  act(() => socket(0).serverOpens());
+  act(() => socket(0).serverDrops());
+
+  let result: boolean | null = null;
+  act(() => { void getApi().waitForConnection(6000).then((connected) => { result = connected; }); });
+  await act(async () => { vi.advanceTimersByTime(6000); });
+
+  assert.equal(result, false);
+});
+
+test('waitForConnection resolves immediately on an open socket', async () => {
+  const getApi = renderWithApi();
+  act(() => socket(0).serverOpens());
+
+  let result: boolean | null = null;
+  await act(async () => { result = await getApi().waitForConnection(6000); });
+
+  assert.equal(result, true);
+  assert.equal(FakeWebSocket.instances.length, 1);
+});
+
+test('a page back from a long stay in the background replaces its socket', () => {
+  renderWithApi();
+  act(() => socket(0).serverOpens());
+
+  const setVisibility = (state: 'hidden' | 'visible') => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: state });
+    document.dispatchEvent(new Event('visibilitychange'));
+  };
+
+  act(() => setVisibility('hidden'));
+  act(() => { vi.advanceTimersByTime(20_000); });
+  act(() => setVisibility('visible'));
+
+  assert.equal(FakeWebSocket.instances.length, 2, 'the socket that may have died silently is replaced');
+});
+
+test('a short trip to another tab keeps the socket', () => {
+  renderWithApi();
+  act(() => socket(0).serverOpens());
+
+  const setVisibility = (state: 'hidden' | 'visible') => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: state });
+    document.dispatchEvent(new Event('visibilitychange'));
+  };
+
+  act(() => setVisibility('hidden'));
+  act(() => { vi.advanceTimersByTime(3_000); });
+  act(() => setVisibility('visible'));
+
+  assert.equal(FakeWebSocket.instances.length, 1);
+});
