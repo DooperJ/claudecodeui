@@ -48,7 +48,7 @@ type ChatComposerProps = {
   handlePermissionDecision: (
     requestIds: string | string[],
     decision: { allow?: boolean; message?: string; rememberEntry?: string | null; updatedInput?: unknown },
-  ) => void;
+  ) => boolean;
   handleGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
   activity: SessionActivity | null;
   isLoading: boolean;

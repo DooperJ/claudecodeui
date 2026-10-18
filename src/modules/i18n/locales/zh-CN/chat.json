@@ -178,13 +178,8 @@
       "sessionMessages": "正在加载会话消息..."
     },
     "messages": {
-      "showingOf": "显示 {{shown}} / {{total}} 条消息",
-      "scrollToLoad": "向上滚动以加载更多",
       "showingLast": "显示最近 {{count}} 条消息（共 {{total}} 条）",
       "loadEarlier": "加载更早的消息",
-      "loadAll": "加载全部消息",
-      "loadingAll": "正在加载全部消息...",
-      "allLoaded": "全部消息已加载",
       "perfWarning": "已加载全部消息 - 滚动可能变慢。点击「滚动到底部」恢复性能。"
     }
   },
@@ -337,5 +332,9 @@
       "agent": "正在运行子代理",
       "using": "正在使用 {{tool}}"
     }
+  },
+  "misc": {
+    "answerNotSent": "连接已断开，答案没有发出。内容已保留，恢复连接后请重新提交。",
+    "replyBelow": "请在下方输入框回复"
   }
 }

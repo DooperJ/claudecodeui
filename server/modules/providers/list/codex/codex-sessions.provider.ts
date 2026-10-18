@@ -1,5 +1,6 @@
 import fsSync from 'node:fs';
 import fsp from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 
@@ -7,7 +8,7 @@ import { sessionsDb } from '@/modules/database/index.js';
 import { codexAppServer } from '@/modules/providers/list/codex/codex-app-server.client.js';
 import { parseFilesInputTag, toImageAttachments } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
-import { prepareTranscriptMessages } from '@/shared/message-unification.js';
+import { normalizeAskQuestions, prepareTranscriptMessages } from '@/shared/message-unification.js';
 import type {
   AnyRecord,
   FetchHistoryOptions,
@@ -27,6 +28,116 @@ import {
 } from '@/shared/utils.js';
 
 const PROVIDER = 'codex';
+
+//----------------- LIVE ASYNC QUESTIONS ------------
+
+/** How much of a rollout's end is searched for the question just asked; one turn's rows fit well inside it. */
+const ASYNC_QUESTION_TAIL_BYTES = 256 * 1024;
+
+/** Rollout files located by thread id, so a long run searches the sessions tree once. */
+const rolloutPathByThreadId = new Map<string, string>();
+
+/** `~/.codex/sessions/YYYY/MM/DD` for a date, in local time (Codex's own layout). */
+function codexDayDirectory(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return path.join(
+    os.homedir(),
+    '.codex',
+    'sessions',
+    String(date.getFullYear()),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  );
+}
+
+/** Finds a thread's rollout among today's and yesterday's directories, where a running thread's file is. */
+async function locateRunningRollout(threadId: string): Promise<string | null> {
+  const known = rolloutPathByThreadId.get(threadId);
+  if (known) {
+    return known;
+  }
+
+  const now = Date.now();
+  const directories = [new Date(now), new Date(now - 24 * 60 * 60 * 1000)].map(codexDayDirectory);
+  for (const directory of directories) {
+    const match = await findFileWithSuffix(directory, `-${threadId}.jsonl`, 0);
+    if (match) {
+      rolloutPathByThreadId.set(threadId, match);
+      return match;
+    }
+  }
+  return null;
+}
+
+/**
+ * Reads the question Codex has just asked through its async ask-the-user tool.
+ *
+ * The SDK's live stream carries that question only as a plain assistant
+ * message whose options were flattened into a markdown list; the rollout it
+ * writes alongside keeps them structured (`delivery: 'async'` with the
+ * `questions`). Matching on the message text finds the structured form, so the
+ * live transcript can show the same question card a reload would. Returns null
+ * for any message that is not such a question, or when the rollout cannot be
+ * read — the caller then shows the text as it arrived.
+ *
+ * Used by the Codex runtime for each completed assistant message.
+ */
+export async function findCodexAsyncQuestion(
+  threadId: string,
+  messageText: string,
+): Promise<{ callId: string; questions: unknown[] } | null> {
+  const wanted = messageText.trim();
+  if (!threadId || !wanted) {
+    return null;
+  }
+
+  try {
+    const rolloutPath = await locateRunningRollout(threadId);
+    if (!rolloutPath) {
+      return null;
+    }
+
+    const handle = await fsp.open(rolloutPath, 'r');
+    let tail: string;
+    try {
+      const { size } = await handle.stat();
+      const length = Math.min(size, ASYNC_QUESTION_TAIL_BYTES);
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, size - length);
+      tail = buffer.toString('utf8');
+    } finally {
+      await handle.close();
+    }
+
+    // Newest first: the question asked a moment ago is at the end.
+    const lines = tail.split('\n');
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index];
+      if (!line.includes('"delivery":"async"')) {
+        continue;
+      }
+
+      let item: AnyRecord | null = null;
+      try {
+        item = readObjectRecord(readObjectRecord(readObjectRecord(JSON.parse(line))?.payload)?.item);
+      } catch {
+        continue;
+      }
+      if (item?.type !== 'AgentMessage' || item.delivery !== 'async' || !Array.isArray(item.questions)) {
+        continue;
+      }
+
+      const text = extractCodexTextContent(item.content).trim();
+      const callId = typeof item.id === 'string' ? item.id : '';
+      if (callId && text === wanted) {
+        return { callId, questions: normalizeAskQuestions(item.questions) };
+      }
+    }
+  } catch {
+    // A rollout that cannot be read just means the text is shown as it is.
+  }
+  return null;
+}
 
 /**
  * How far up the `~/.codex/sessions/<year>/<month>/<day>` tree a subagent
@@ -299,8 +410,10 @@ function extractCodexTextContent(content: unknown): string {
       }
 
       const record = item as AnyRecord;
+      // Wire rows spell the part type in lower case, typed `item_completed` rows as `Text`.
+      const partType = typeof record.type === 'string' ? record.type.toLowerCase() : '';
       if (
-        (record.type === 'input_text' || record.type === 'output_text' || record.type === 'text')
+        (partType === 'input_text' || partType === 'output_text' || partType === 'text')
         && typeof record.text === 'string'
       ) {
         return record.text;
@@ -2202,6 +2315,19 @@ export class CodexSessionsProvider implements IProviderSessions {
             memoryCitations: cited.memoryCitations,
           })];
         }
+        case 'user_question':
+          // The async ask-the-user tool, as its structured rollout row has it
+          // (see `findCodexAsyncQuestion`): the same card history shows.
+          return [createNormalizedMessage({
+            id: itemId,
+            sessionId,
+            timestamp: ts,
+            provider: PROVIDER,
+            kind: 'tool_use',
+            toolName: 'AskUserQuestion',
+            toolInput: { questions: raw.questions, replyMode: 'message' },
+            toolId: itemId,
+          })];
         case 'reasoning':
           return [createNormalizedMessage({
             id: itemId,

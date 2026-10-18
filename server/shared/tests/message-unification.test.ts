@@ -134,6 +134,43 @@ test('a multi-select Codex answer keeps every label it picked', () => {
   assert.deepEqual((unified.toolInput as { answers: unknown }).answers, { 'Which areas?': 'Providers, Tests' });
 });
 
+test("Codex's async question becomes a replyable AskUserQuestion with option objects", () => {
+  const [unified] = prepareTranscriptMessages([
+    message({
+      provider: 'codex',
+      kind: 'tool_use',
+      toolName: 'request_user_input_async',
+      toolId: 'call-async',
+      toolInput: JSON.stringify({ questions: [{ title: 'Which first?', options: ['A', 'B'] }] }),
+      toolResult: { content: '{"accepted":true}' },
+    }),
+  ]);
+
+  assert.equal(unified.toolName, 'AskUserQuestion');
+  const input = unified.toolInput as { questions: unknown[]; replyMode?: string; answers?: unknown };
+  assert.deepEqual(input.questions, [
+    { title: 'Which first?', question: 'Which first?', options: [{ label: 'A' }, { label: 'B' }] },
+  ]);
+  assert.equal(input.replyMode, 'message', 'the card answers it with a follow-up message');
+  assert.equal(input.answers, undefined, 'the acknowledgement is not an answer');
+});
+
+test('an async question without options is a plain question', () => {
+  const [unified] = prepareTranscriptMessages([
+    message({
+      provider: 'codex',
+      kind: 'tool_use',
+      toolName: 'request_user_input_async',
+      toolId: 'call-free',
+      toolInput: JSON.stringify({ questions: [{ title: 'Which URL is open?', options: null }] }),
+    }),
+  ]);
+
+  const input = unified.toolInput as { questions: Array<{ question: string; options: unknown[] }> };
+  assert.equal(input.questions[0].question, 'Which URL is open?');
+  assert.deepEqual(input.questions[0].options, []);
+});
+
 test("Claude's AskUserQuestion answer is folded into the question it answers", () => {
   const [unified] = prepareTranscriptMessages([
     message({

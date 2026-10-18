@@ -19,7 +19,6 @@ import LiveActivityRow from '@/modules/chat/transcript/LiveActivityRow';
 import MessageComponent from '@/modules/chat/transcript/MessageComponent';
 import ProviderSelectionEmptyState from '@/modules/chat/transcript/ProviderSelectionEmptyState';
 import ToolGroupContainer from '@/modules/chat/transcript/ToolGroupContainer';
-import LoadAllMessagesOverlay from '@/modules/chat/transcript/LoadAllMessagesOverlay';
 import ChatExportMenu from '@/modules/chat/transcript/ChatExportMenu';
 import { BackgroundTasksStrip } from '@/modules/chat/transcript/BackgroundTasksStrip';
 
@@ -59,18 +58,13 @@ type ChatMessagesPaneProps = {
   setInput: Dispatch<SetStateAction<string>>;
   isLoadingMoreMessages: boolean;
   hasMoreMessages: boolean;
-  totalMessages: number;
-  sessionMessagesCount: number;
   revealMessage: (message: ChatMessage) => void;
   /** The session's running background tasks from the activity map, for the strip to list ones whose rows are not loaded. */
   backgroundTasks?: BackgroundTaskSummary[];
   /** The chat websocket's send, which the background-tasks strip stops a task over. */
   sendMessage: (message: unknown) => void;
   loadAllMessages: () => void;
-  allMessagesLoaded: boolean;
   isLoadingAllMessages: boolean;
-  loadAllJustFinished: boolean;
-  showLoadAllOverlay: boolean;
   createDiff: any;
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
@@ -137,16 +131,11 @@ function ChatMessagesPane({
   setInput,
   isLoadingMoreMessages,
   hasMoreMessages,
-  totalMessages,
-  sessionMessagesCount,
   revealMessage,
   backgroundTasks,
   sendMessage,
   loadAllMessages,
-  allMessagesLoaded,
   isLoadingAllMessages,
-  loadAllJustFinished,
-  showLoadAllOverlay,
   createDiff,
   onEditMessage,
   onForkFromMessage,
@@ -338,29 +327,15 @@ function ChatMessagesPane({
               />
             </div>
           </div>
-          {/* Where the old header showed paging status; floating so it never changes the list's height. */}
-          <div className="pointer-events-none absolute inset-x-0 top-14 z-10 flex justify-center px-4">
-            {isLoadingMoreMessages && !isLoadingAllMessages && !allMessagesLoaded ? (
+          {/* Floating over the list so it never changes the list's height. */}
+          {(isLoadingMoreMessages || isLoadingAllMessages) && (
+            <div className="pointer-events-none absolute inset-x-0 top-14 z-10 flex justify-center px-4">
               <div className="flex items-center space-x-2 rounded-full bg-background/90 px-3 py-1 text-sm text-gray-500 shadow dark:text-gray-400">
                 <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-gray-400" />
                 <p>{t('session.loading.olderMessages')}</p>
               </div>
-            ) : hasMoreMessages && !allMessagesLoaded && totalMessages > 0 ? (
-              <div className="rounded-full bg-background/90 px-3 py-1 text-sm text-gray-500 shadow dark:text-gray-400">
-                {t('session.messages.showingOf', { shown: sessionMessagesCount, total: totalMessages })}{' '}
-                <span className="text-xs">{t('session.messages.scrollToLoad')}</span>
-              </div>
-            ) : null}
-          </div>
-          <div className="absolute inset-x-0 top-2 z-20">
-            <LoadAllMessagesOverlay
-              showLoadAllOverlay={showLoadAllOverlay}
-              isLoadingAllMessages={isLoadingAllMessages}
-              loadAllJustFinished={loadAllJustFinished}
-              totalMessages={totalMessages}
-              onLoadAllMessages={loadAllMessages}
-            />
-          </div>
+            </div>
+          )}
         </>
       ) : (
         <div className="h-full overflow-y-auto overflow-x-hidden px-4 pt-3 sm:pt-4">

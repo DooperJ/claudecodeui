@@ -944,13 +944,13 @@ export type TodoItem = {
 /** Display state of a tool call — 'running', 'completed', 'error' or 'denied' — used to choose the status badge and styling shown beside it in the transcript. */
 export type ToolStatus = 'running' | 'completed' | 'error' | 'denied';
 
-/** Props contract that every interactive permission panel implements, giving the panel the pending request and the callback it calls to allow or deny that request; use it when registering a panel in the permission panel registry. */
+/** Props contract that every interactive permission panel implements, giving the panel the pending request and the callback it calls to allow or deny that request (it returns whether the decision was sent, so a panel can stay up and say so when the connection is down); use it when registering a panel in the permission panel registry. */
 export type PermissionPanelProps = {
   request: PendingPermissionRequest;
   onDecision: (
     requestIds: string | string[],
     decision: { allow?: boolean; message?: string; updatedInput?: unknown },
-  ) => void;
+  ) => boolean;
 };
 
 // ---------------------------

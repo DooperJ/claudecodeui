@@ -272,6 +272,8 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
           <QuestionAnswerContent
             questions={contentProps.questions || []}
             answers={contentProps.answers || {}}
+            toolId={toolId}
+            replyMode={contentProps.replyMode}
           />
         );
         break;

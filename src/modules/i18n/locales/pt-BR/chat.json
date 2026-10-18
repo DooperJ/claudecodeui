@@ -217,13 +217,8 @@
       "sessionMessages": "Carregando mensagens da sessão..."
     },
     "messages": {
-      "showingOf": "Exibindo {{shown}} de {{total}} mensagens",
-      "scrollToLoad": "Role para cima para carregar mais",
       "showingLast": "Exibindo últimas {{count}} mensagens ({{total}} total)",
       "loadEarlier": "Carregar mensagens anteriores",
-      "loadAll": "Carregar todas as mensagens",
-      "loadingAll": "Carregando todas as mensagens...",
-      "allLoaded": "Todas as mensagens carregadas",
       "perfWarning": "Todas as mensagens carregadas — a rolagem pode ficar mais lenta. Clique em \"Rolar para o final\" para restaurar o desempenho."
     }
   },

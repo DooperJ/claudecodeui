@@ -121,3 +121,15 @@ test('a send whose wait for the socket runs out behaves like a send on a dead co
   assert.equal(view.result.current.input, 'hello');
   assert.deepEqual(added.map((message) => message.type), ['error']);
 });
+
+test('replying to a question sends the quoted answer and leaves what the user was typing', async () => {
+  const { view, sentFrames } = renderComposer(true);
+  await act(async () => { view.result.current.setInput('half-written thought'); });
+
+  await act(async () => { await view.result.current.replyToQuestion('Which first?', 'B'); });
+
+  assert.equal(sentFrames.length, 1);
+  assert.equal(sentFrames[0].type, 'chat.send');
+  assert.equal(sentFrames[0].content, '> Which first?\n\nB');
+  assert.equal(view.result.current.input, 'half-written thought', 'the draft survives the reply');
+});

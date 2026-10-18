@@ -174,6 +174,23 @@ export default function TranscriptVirtualList<TItem>({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetKey]);
 
+  // The virtualizer follows an append only when the list's last item changes,
+  // and a live status line keeps that last item fixed for the whole run: rows
+  // then land before it and the reader at the end was left behind. So a new
+  // last message is followed here, judged by where the reader was before it
+  // arrived (the new row itself pushes the end further away).
+  const lastRowKey = rows.length > 0 ? rows[rows.length - 1].key : null;
+  const previousLastRowKeyRef = useRef(lastRowKey);
+  useLayoutEffect(() => {
+    const previousLastRowKey = previousLastRowKeyRef.current;
+    previousLastRowKeyRef.current = lastRowKey;
+    if (!canVirtualize || previousLastRowKey === null || lastRowKey === null) return;
+    if (previousLastRowKey === lastRowKey || !reportedAtBottomRef.current) return;
+    virtualizer.scrollToIndex(count - 1, { align: 'end' });
+  // Only a different last message counts; `count` and `virtualizer` are read as of that render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastRowKey]);
+
   const handleScroll = useCallback(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return;

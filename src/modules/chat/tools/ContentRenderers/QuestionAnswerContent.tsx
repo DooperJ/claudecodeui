@@ -1,10 +1,16 @@
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
+import { useQuestionReply } from '@/modules/chat/context/QuestionReplyContext';
 import type { Question } from '@/shared/types';
 
 type QuestionAnswerContentProps = {
   questions: Question[];
   answers: Record<string, string>;
+  /** The tool call that asked the questions; finds the reply that answered them. */
+  toolId?: string;
+  /** 'message' when the answer is a follow-up message rather than part of the call (Codex's async question). */
+  replyMode?: string;
   className?: string;
 };
 
@@ -16,8 +22,14 @@ type QuestionAnswerContentProps = {
 export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
   questions,
   answers,
+  toolId,
+  replyMode,
   className = '',
 }) => {
+  const { t } = useTranslation('chat');
+  const questionReply = useQuestionReply();
+  const repliesByMessage = replyMode === 'message' && Boolean(questionReply);
+  // Which question is expanded; local because each card folds independently.
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
   // Tool inputs are runtime data loaded from session transcripts and may be
@@ -40,7 +52,9 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
           return null;
         }
         const q = rawQuestion;
-        const answer = answers?.[q.question];
+        // A question answered by message has its answer in a later user message.
+        const answer = answers?.[q.question]
+          ?? (repliesByMessage && toolId ? questionReply?.findQuestionAnswer(toolId, q.question) ?? undefined : undefined);
         // `options` is typed as an array but comes from untrusted runtime data;
         // keep only valid entries so `.some`/`.map` below never throw.
         const options = Array.isArray(q.options)
@@ -116,7 +130,7 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
                   </div>
                 )}
 
-                {!isExpanded && skipped && hasAnyAnswer && (
+                {!isExpanded && skipped && hasAnyAnswer && !repliesByMessage && (
                   <span className="mt-1 inline-block text-[10px] italic text-gray-400 dark:text-gray-500">
                     Skipped
                   </span>
@@ -132,6 +146,26 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
               </svg>
             </button>
+
+            {repliesByMessage && !answer && (
+              <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2.5 pl-9">
+                {options.map((opt) => (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    disabled={!questionReply?.canReply}
+                    title={opt.description}
+                    onClick={() => questionReply?.replyToQuestion(q.question, opt.label)}
+                    className="rounded-md border border-blue-200/70 bg-blue-50/70 px-2 py-1 text-[12px] font-medium text-blue-700 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-800/50 dark:bg-blue-900/20 dark:text-blue-300 dark:hover:bg-blue-900/40"
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+                {options.length === 0 && (
+                  <span className="text-[11px] italic text-gray-400 dark:text-gray-500">{t('misc.replyBelow')}</span>
+                )}
+              </div>
+            )}
 
             {isExpanded && (
               <div className="border-t border-gray-100 px-3 pb-2.5 pt-0.5 dark:border-gray-700/40">

@@ -6,6 +6,9 @@ import { useTasksSettings } from '@/modules/task-master';
 import { usePaletteOpsRegister } from '@/modules/command-palette';
 import { useWebSocket } from '@/shared/context/WebSocketContext';
 import PermissionContext from '@/modules/chat/context/PermissionContext';
+import { readQuestionReply } from '@/shared/utils';
+import QuestionReplyContext from '@/modules/chat/context/QuestionReplyContext';
+import type { QuestionReplyContextValue } from '@/modules/chat/context/QuestionReplyContext';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 import { TranscriptSessionContext } from '@/modules/chat/context/TranscriptSessionContext';
 import { MessageDeliveryContext } from '@/modules/chat/context/MessageDeliveryContext';
@@ -144,7 +147,6 @@ function ChatInterface({
     isLoadingSessionMessages,
     isLoadingMoreMessages,
     hasMoreMessages,
-    totalMessages,
     isUserScrolledUp,
     setIsUserScrolledUp,
     tokenBudget,
@@ -156,10 +158,7 @@ function ChatInterface({
     revealMessage,
     loadAllMessages,
     loadFullTranscript,
-    allMessagesLoaded,
     isLoadingAllMessages,
-    loadAllJustFinished,
-    showLoadAllOverlay,
     createDiff,
     scrollContainerRef,
     scrollToBottom,
@@ -230,6 +229,7 @@ function ChatInterface({
     isDragActive,
     openAttachmentPicker,
     handleSubmit,
+    replyToQuestion,
     backgroundSendPrompt,
     resolveBackgroundSendPrompt,
     queuedDraft,
@@ -416,6 +416,23 @@ function ChatInterface({
     handlePermissionDecision,
   }), [pendingPermissionRequests, handlePermissionDecision]);
 
+  // Lets a question card answer by message and recognise an answer already given.
+  const questionReplyValue = useMemo<QuestionReplyContextValue>(() => ({
+    replyToQuestion: (question, answer) => { void replyToQuestion(question, answer); },
+    canReply: !queuedDraft,
+    findQuestionAnswer: (toolId, question) => {
+      const askedAt = chatMessages.findIndex((message) => (message.toolId ?? message.toolCallId) === toolId);
+      if (askedAt < 0) return null;
+      for (let index = askedAt + 1; index < chatMessages.length; index += 1) {
+        const message = chatMessages[index];
+        if (message.type !== 'user') continue;
+        const answer = readQuestionReply(message.content, question);
+        if (answer) return answer;
+      }
+      return null;
+    },
+  }), [chatMessages, queuedDraft, replyToQuestion]);
+
   // Lets markdown image paths in the transcript resolve against this project.
   const markdownWorkspaceValue = useMemo(() => ({
     projectId: selectedProject?.projectId ?? null,
@@ -488,6 +505,7 @@ function ChatInterface({
 
   return (
     <PermissionContext.Provider value={permissionContextValue}>
+    <QuestionReplyContext.Provider value={questionReplyValue}>
       <div className="flex h-full min-h-0 flex-col">
         <MarkdownWorkspaceContext.Provider value={markdownWorkspaceValue}>
           <TranscriptSessionContext.Provider value={transcriptSessionValue}>
@@ -527,16 +545,11 @@ function ChatInterface({
               setInput={setInput}
               isLoadingMoreMessages={isLoadingMoreMessages}
               hasMoreMessages={hasMoreMessages}
-              totalMessages={totalMessages}
-              sessionMessagesCount={chatMessages.length}
               revealMessage={revealMessage}
               backgroundTasks={sessionActivity?.tasks}
               sendMessage={sendMessage}
               loadAllMessages={loadAllMessages}
-              allMessagesLoaded={allMessagesLoaded}
               isLoadingAllMessages={isLoadingAllMessages}
-              loadAllJustFinished={loadAllJustFinished}
-              showLoadAllOverlay={showLoadAllOverlay}
               createDiff={createDiff}
               onFileOpen={onFileOpen}
               onShowSettings={onShowSettings}
@@ -656,6 +669,7 @@ function ChatInterface({
         currentSessionId={currentSessionId || selectedSession?.id || null}
         onSelectProviderModel={selectProviderModel}
       />
+    </QuestionReplyContext.Provider>
     </PermissionContext.Provider>
   );
 }

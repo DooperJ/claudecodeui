@@ -250,3 +250,37 @@ export const getQuickSettingsTabId = (tab: QuickSettingsTab): string => `quick-s
 
 /** DOM id of the tabpanel a quick settings tab controls; pairs with `getQuickSettingsTabId`. */
 export const getQuickSettingsTabPanelId = (tab: QuickSettingsTab): string => `quick-settings-tabpanel-${tab}`;
+
+// ---------------------------
+
+//----------------- QUESTION REPLIES ------------
+
+/**
+ * The text of a reply to a question the model asked: the question as a
+ * markdown quote, a blank line, then the answer. The model sees what is being
+ * answered, the user bubble renders it as a quote, and it survives a reload as
+ * plain message text. Used by the composer to send a reply and (through
+ * `readQuestionReply`) by the question card to recognise one.
+ */
+export const buildQuestionReply = (question: string, answer: string): string => {
+  const quoted = question.trim().split('\n').map((line) => `> ${line}`).join('\n');
+  return `${quoted}\n\n${answer.trim()}`;
+};
+
+/**
+ * The answer a message gives to `question`, or null when the message is not a
+ * reply to that exact question. Inverse of `buildQuestionReply`.
+ */
+export const readQuestionReply = (content: string | undefined, question: string): string | null => {
+  if (!content) {
+    return null;
+  }
+
+  const prefix = `${buildQuestionReply(question, '').trimEnd()}\n\n`;
+  if (!content.startsWith(prefix)) {
+    return null;
+  }
+
+  const answer = content.slice(prefix.length).trim();
+  return answer || null;
+};

@@ -205,13 +205,8 @@
       "sessionMessages": "Memuat pesan sesi..."
     },
     "messages": {
-      "showingOf": "Menampilkan {{shown}} dari {{total}} pesan",
-      "scrollToLoad": "Gulir ke atas untuk memuat lainnya",
       "showingLast": "Menampilkan {{count}} pesan terakhir (total {{total}})",
       "loadEarlier": "Muat pesan sebelumnya",
-      "loadAll": "Muat semua pesan",
-      "loadingAll": "Memuat semua pesan...",
-      "allLoaded": "Semua pesan telah dimuat",
       "perfWarning": "Semua pesan telah dimuat — scrolling mungkin lebih lambat. Klik \"Gulir ke bawah\" untuk memulihkan performa."
     }
   },

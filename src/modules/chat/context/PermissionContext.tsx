@@ -7,7 +7,7 @@ export type PermissionContextValue = {
   handlePermissionDecision: (
     requestIds: string | string[],
     decision: { allow?: boolean; message?: string; rememberEntry?: string | null; updatedInput?: unknown },
-  ) => void;
+  ) => boolean;
 };
 
 const PermissionContext = createContext<PermissionContextValue | null>(null);

@@ -231,16 +231,11 @@
       "sessionMessages": "Načítání zpráv relace..."
     },
     "messages": {
-      "showingOf": "Zobrazené zprávy: {{shown}} z {{total}}",
-      "scrollToLoad": "Posunutím nahoru načtete další",
       "showingLast_one": "Zobrazena poslední {{count}} zpráva (celkem {{total}})",
       "showingLast_few": "Zobrazeny poslední {{count}} zprávy (celkem {{total}})",
       "showingLast_many": "Zobrazeno posledních {{count}} zprávy (celkem {{total}})",
       "showingLast_other": "Zobrazeno posledních {{count}} zpráv (celkem {{total}})",
       "loadEarlier": "Načíst starší zprávy",
-      "loadAll": "Načíst všechny zprávy",
-      "loadingAll": "Načítání všech zpráv...",
-      "allLoaded": "Všechny zprávy načteny",
       "perfWarning": "Všechny zprávy načteny – posouvání může být pomalejší. Výkon obnovíte kliknutím na „Posunout na konec“."
     }
   },

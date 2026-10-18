@@ -15,6 +15,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '@/shared/api';
 import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
+import { buildQuestionReply } from '@/shared/utils';
 import type { BackgroundSendChoice, BackgroundSendPrompt, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
 import {
@@ -197,6 +198,15 @@ const getNotificationSessionSummary = (
  * never lands inside it.
  */
 const SAFARI_IME_RACE_WINDOW_MS = 30;
+
+/**
+ * A phone or tablet has no Shift or Ctrl on its soft keyboard, so there Enter
+ * is the only way to start a new line and the send button sends. Read when a
+ * key is pressed rather than once, because the answer follows the device.
+ */
+function isTouchPrimaryDevice(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true;
+}
 
 export function useChatComposerState({
   selectedProject,
@@ -1132,6 +1142,29 @@ export function useChatComposerState({
     handleSubmitRef.current = handleSubmit;
   }, [handleSubmit]);
 
+  /**
+   * Answers a question card by sending the pick as a message that quotes the
+   * question. It goes through the normal send path (so it queues while a turn
+   * runs), and whatever the user was typing is put back afterwards, since a
+   * send clears the composer.
+   */
+  const replyToQuestion = useCallback(async (question: string, answer: string) => {
+    const content = buildQuestionReply(question, answer);
+    const typedText = inputValueRef.current;
+    const typedFiles = attachedFiles;
+    await handleSubmit(
+      { preventDefault: () => undefined } as MouseEvent,
+      { content, attachments: [], options: buildSendOptions(content) },
+    );
+    if (typedText) {
+      setInput(typedText);
+      inputValueRef.current = typedText;
+    }
+    if (typedFiles.length > 0) {
+      setAttachedFiles(typedFiles);
+    }
+  }, [attachedFiles, buildSendOptions, handleSubmit, setInput]);
+
   // The VPS dispatcher owns sending. While the card is visible, periodically
   // reconcile only its removal so the UI notices when the server claims it.
   useEffect(() => {
@@ -1320,7 +1353,10 @@ export function useChatComposerState({
         if ((event.ctrlKey || event.metaKey) && !event.shiftKey) {
           event.preventDefault();
           handleSubmit(event);
-        } else if (!event.shiftKey && !event.ctrlKey && !event.metaKey && !sendByCtrlEnter) {
+        } else if (
+          !event.shiftKey && !event.ctrlKey && !event.metaKey
+          && !sendByCtrlEnter && !isTouchPrimaryDevice()
+        ) {
           event.preventDefault();
           handleSubmit(event);
         }
@@ -1403,23 +1439,27 @@ export function useChatComposerState({
       const ids = Array.isArray(requestIds) ? requestIds : [requestIds];
       const validIds = ids.filter(Boolean);
       if (validIds.length === 0) {
-        return;
+        return false;
       }
 
-      validIds.forEach((requestId) => {
-        sendMessage({
-          type: 'chat.permission-response',
-          requestId,
-          allow: Boolean(decision?.allow),
-          updatedInput: decision?.updatedInput,
-          message: decision?.message,
-          rememberEntry: decision?.rememberEntry,
-        });
-      });
+      // A prompt is only dropped once its answer left this page: a closed
+      // socket refuses the send, and dropping the prompt then would lose the
+      // answer silently (the server still waits and re-offers it on reconnect).
+      const deliveredIds = validIds.filter((requestId) => sendMessage({
+        type: 'chat.permission-response',
+        requestId,
+        allow: Boolean(decision?.allow),
+        updatedInput: decision?.updatedInput,
+        message: decision?.message,
+        rememberEntry: decision?.rememberEntry,
+      }));
 
-      setPendingPermissionRequests((previous) =>
-        previous.filter((request) => !validIds.includes(request.requestId)),
-      );
+      if (deliveredIds.length > 0) {
+        setPendingPermissionRequests((previous) =>
+          previous.filter((request) => !deliveredIds.includes(request.requestId)),
+        );
+      }
+      return deliveredIds.length === validIds.length;
     },
     [sendMessage, setPendingPermissionRequests],
   );
@@ -1479,6 +1519,7 @@ export function useChatComposerState({
     isDragActive,
     openAttachmentPicker: open,
     handleSubmit,
+    replyToQuestion,
     backgroundSendPrompt,
     resolveBackgroundSendPrompt,
     queuedDraft,

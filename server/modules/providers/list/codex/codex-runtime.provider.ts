@@ -22,6 +22,7 @@ import {
   createNormalizedMessage,
 } from '@/shared/index.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
+import { findCodexAsyncQuestion } from '@/modules/providers/list/codex/codex-sessions.provider.js';
 import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 
 type ActiveCodexSession = {
@@ -397,6 +398,22 @@ async function queryCodex(
         && !PROGRESSIVE_CODEX_ITEM_TYPES.has(event.item?.type)
       ) {
         continue;
+      }
+
+      // Codex's async ask-the-user tool reaches this stream as a plain assistant
+      // message; the structured question is shown instead, as it is after a reload.
+      if (event.type === 'item.completed' && event.item?.type === 'agent_message' && capturedSessionId) {
+        const question = await findCodexAsyncQuestion(capturedSessionId, event.item.text);
+        if (question) {
+          const questionMessages = context.normalizeMessage(
+            { type: 'item', itemType: 'user_question', itemId: question.callId, questions: question.questions },
+            capturedSessionId,
+          );
+          for (const msg of questionMessages) {
+            sendMessage(ws, msg);
+          }
+          continue;
+        }
       }
 
       const transformed = transformCodexEvent(event);

@@ -26,8 +26,15 @@ const CHECKLIST_TOOL = 'TodoWrite';
 /** The one tool name every provider's user-question call is rewritten onto. */
 const ASK_TOOL = 'AskUserQuestion';
 
-/** Provider spellings of the ask-the-user tool. Codex calls it `request_user_input`. */
-const ASK_TOOL_ALIASES = new Set([ASK_TOOL, 'request_user_input']);
+/**
+ * Provider spellings of the ask-the-user tool. Codex calls it
+ * `request_user_input` (blocks the turn for an answer) or, in the runs this app
+ * starts, `request_user_input_async` (returns at once; the answer is a later message).
+ */
+const ASK_TOOL_ALIASES = new Set([ASK_TOOL, 'request_user_input', 'request_user_input_async']);
+
+/** The spelling whose answer arrives as an ordinary follow-up message rather than inside the call. */
+const ASYNC_ASK_TOOL = 'request_user_input_async';
 
 /**
  * Claude's incremental task tracker. Each call mutates one entry of a list the
@@ -159,11 +166,47 @@ function readAskAnswers(message: NormalizedMessage): AnyRecord | null {
 }
 
 /**
+ * Gives one question the shape the question card reads: `question` text, a
+ * `header`, and `options` as `{label, description?}` objects.
+ *
+ * Claude and Codex's blocking tool already send that shape. Codex's async tool
+ * sends `{title, options?: string[] | null}` instead, so its title becomes the
+ * question and each plain string becomes an option label. Anything unreadable
+ * is passed through untouched for the card's own guards to skip.
+ */
+function normalizeAskQuestion(entry: unknown): unknown {
+  const question = readObjectRecord(entry);
+  if (!question) {
+    return entry;
+  }
+
+  const text = readNonEmptyString(question.question) || readNonEmptyString(question.title);
+  const options = Array.isArray(question.options)
+    ? question.options.map((option) => (typeof option === 'string' ? { label: option } : option))
+    : [];
+
+  return { ...question, ...(text ? { question: text } : {}), options };
+}
+
+/**
+ * Normalizes the questions of an ask-the-user call into the card's shape.
+ * Used by the unification pass for history and by Codex's live stream, so a
+ * question looks the same whether it was just asked or reloaded later.
+ */
+export function normalizeAskQuestions(questions: unknown): unknown[] {
+  return Array.isArray(questions) ? questions.map(normalizeAskQuestion) : [];
+}
+
+/**
  * Normalizes one ask-the-user call: canonical name, and the answers folded into
  * the input so the question and what was picked render as one card instead of a
  * question card followed by an unreadable result blob.
+ *
+ * A question whose answer is a follow-up message (`replyMode: 'message'`) has
+ * no answers to fold in; the card turns its options into replies instead.
  */
 function unifyAskCall(message: NormalizedMessage): void {
+  const isAsync = message.toolName === ASYNC_ASK_TOOL;
   message.toolName = ASK_TOOL;
 
   const input = readToolPayload(message.toolInput);
@@ -171,10 +214,14 @@ function unifyAskCall(message: NormalizedMessage): void {
     return;
   }
 
-  const rawAnswers = readAskAnswers(message);
-  message.toolInput = rawAnswers
-    ? { ...input, answers: keyAnswersByQuestion(input.questions, rawAnswers) }
-    : input;
+  const questions = normalizeAskQuestions(input.questions);
+  const rawAnswers = isAsync ? null : readAskAnswers(message);
+  message.toolInput = {
+    ...input,
+    questions,
+    ...(isAsync ? { replyMode: 'message' } : {}),
+    ...(rawAnswers ? { answers: keyAnswersByQuestion(questions, rawAnswers) } : {}),
+  };
 }
 
 //----------------- RUNNING CHECKLIST ------------

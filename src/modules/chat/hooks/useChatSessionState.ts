@@ -180,19 +180,14 @@ export function useChatSessionState({
   const [isLoadingSessionMessages, setIsLoadingSessionMessages] = useState(false);
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
-  const [totalMessages, setTotalMessages] = useState(0);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
   const [tokenBudget, setTokenBudget] = useState<Record<string, unknown> | null>(null);
-  const [allMessagesLoaded, setAllMessagesLoaded] = useState(false);
   const [isLoadingAllMessages, setIsLoadingAllMessages] = useState(false);
-  const [loadAllJustFinished, setLoadAllJustFinished] = useState(false);
-  const [showLoadAllOverlay, setShowLoadAllOverlay] = useState(false);
 
   /** The transcript's scrolling element, filled in by the virtual list's `scrollerRef`. */
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   /** Drives the transcript list: jumps to a row by index and to the bottom. */
   const listRef = useRef<TranscriptListHandle>(null);
-  const wasNearTopRef = useRef(false);
   // The sidebar-search hit this transcript still owes the user a scroll to.
   // State rather than a ref because resolving it widens the render window,
   // and it is cleared once the row is on screen or the retries run out.
@@ -214,8 +209,6 @@ export function useChatSessionState({
   const allMessagesLoadedRef = useRef(false);
   const messagesOffsetRef = useRef(0);
   const scrollPositionRef = useRef({ height: 0, top: 0 });
-  const loadAllFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
   /**
    * Tracks the last processed value from `useProjectsState.newSessionTrigger`.
@@ -257,27 +250,13 @@ export function useChatSessionState({
     setPendingUserMessage(null);
     messagesOffsetRef.current = 0;
     setHasMoreMessages(false);
-    setTotalMessages(0);
-    
+
     setTokenBudget(null);
-    setAllMessagesLoaded(false);
     allMessagesLoadedRef.current = false;
     setIsLoadingAllMessages(false);
-    setLoadAllJustFinished(false);
-    setShowLoadAllOverlay(false);
     setSearchTarget(null);
-    wasNearTopRef.current = false;
     searchScrollActiveRef.current = false;
     lastLoadedSessionKeyRef.current = null;
-
-    if (loadAllOverlayTimerRef.current) {
-      clearTimeout(loadAllOverlayTimerRef.current);
-      loadAllOverlayTimerRef.current = null;
-    }
-    if (loadAllFinishedTimerRef.current) {
-      clearTimeout(loadAllFinishedTimerRef.current);
-      loadAllFinishedTimerRef.current = null;
-    }
   }, [newSessionTrigger, onSessionIdle, resetStreamingState]);
 
   /* ---------------------------------------------------------------- */
@@ -319,7 +298,6 @@ export function useChatSessionState({
     const slot = result.slot;
     if (slot && activeSessionIdRef.current === sessionId) {
       setHasMoreMessages(slot.hasMore);
-      setTotalMessages(slot.total);
       messagesOffsetRef.current = slot.offset;
       if (slot.tokenUsage !== undefined) {
         setTokenBudget((slot.tokenUsage as Record<string, unknown> | null) ?? null);
@@ -531,35 +509,15 @@ export function useChatSessionState({
         });
         const { slot, prependedCount } = result;
         setHasMoreMessages(slot.hasMore);
-        setTotalMessages(slot.total);
         messagesOffsetRef.current = slot.offset;
         if (slot.tokenUsage !== undefined) {
           setTokenBudget((slot.tokenUsage as Record<string, unknown> | null) ?? null);
         }
 
-        if (prependedCount === 0) {
-          if (!slot.hasMore) {
-            allMessagesLoadedRef.current = true;
-            setAllMessagesLoaded(true);
-            if (loadAllOverlayTimerRef.current) {
-              clearTimeout(loadAllOverlayTimerRef.current);
-              loadAllOverlayTimerRef.current = null;
-            }
-            setShowLoadAllOverlay(false);
-          }
-          return false;
-        }
-
         if (!slot.hasMore) {
           allMessagesLoadedRef.current = true;
-          setAllMessagesLoaded(true);
-          if (loadAllOverlayTimerRef.current) {
-            clearTimeout(loadAllOverlayTimerRef.current);
-            loadAllOverlayTimerRef.current = null;
-          }
-          setShowLoadAllOverlay(false);
         }
-        return true;
+        return prependedCount > 0;
       } finally {
         isLoadingMoreRef.current = false;
         setIsLoadingMoreMessages(false);
@@ -577,26 +535,7 @@ export function useChatSessionState({
       height: container.scrollHeight,
       top: container.scrollTop,
     };
-
-    const scrolledNearTop = container.scrollTop < 100;
-
-    // "Load all" prompt: appear (with fade-in) when the user reaches the top
-    if (scrolledNearTop && hasMoreMessages && !allMessagesLoadedRef.current) {
-      if (!wasNearTopRef.current) {
-        wasNearTopRef.current = true;
-        if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
-
-        setShowLoadAllOverlay(true);
-        loadAllOverlayTimerRef.current = setTimeout(() => {
-          setShowLoadAllOverlay(false);
-          loadAllOverlayTimerRef.current = null;
-        }, 2500);
-      }
-    } else if (!scrolledNearTop) {
-      wasNearTopRef.current = false;
-    }
-
-  }, [hasMoreMessages, isActive]);
+  }, [isActive]);
 
   // Coming back to the Chat tab: it was hidden with display:none, which drops
   // the scroll offset, so put the reader back where they were (or at the bottom
@@ -634,7 +573,6 @@ export function useChatSessionState({
     searchScrollActiveRef.current = false;
     setSearchTarget(null);
 
-    wasNearTopRef.current = false;
     setIsUserScrolledUp(false);
   }, [selectedProject?.projectId, selectedSession?.id]);
 
@@ -679,7 +617,6 @@ export function useChatSessionState({
       setCurrentSessionId(null);
       messagesOffsetRef.current = 0;
       setHasMoreMessages(false);
-      setTotalMessages(0);
       setTokenBudget(null);
       lastLoadedSessionKeyRef.current = null;
       return;
@@ -715,15 +652,8 @@ export function useChatSessionState({
     // Reset pagination/scroll state
     messagesOffsetRef.current = 0;
     setHasMoreMessages(false);
-    setTotalMessages(0);
-    setAllMessagesLoaded(false);
     allMessagesLoadedRef.current = false;
     setIsLoadingAllMessages(false);
-    setLoadAllJustFinished(false);
-    setShowLoadAllOverlay(false);
-    wasNearTopRef.current = false;
-    if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
-    if (loadAllFinishedTimerRef.current) clearTimeout(loadAllFinishedTimerRef.current);
 
     if (sessionChanged) {
       setTokenBudget(null);
@@ -745,7 +675,6 @@ export function useChatSessionState({
     }).then(slot => {
       if (slot) {
         setHasMoreMessages(slot.hasMore);
-        setTotalMessages(slot.total);
         messagesOffsetRef.current = slot.offset;
         if (slot.tokenUsage !== undefined) {
           setTokenBudget((slot.tokenUsage as Record<string, unknown> | null) ?? null);
@@ -850,9 +779,7 @@ export function useChatSessionState({
               // Fetch the whole transcript so an old hit can be found; the
               // virtual list only renders the rows near the jump.
               setHasMoreMessages(false);
-              setTotalMessages(slot.total);
               messagesOffsetRef.current = slot.offset;
-              setAllMessagesLoaded(true);
               allMessagesLoadedRef.current = true;
             } else if (!isActiveRef.current) {
               setSearchTarget(target);
@@ -931,9 +858,8 @@ export function useChatSessionState({
     scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
   });
 
-  // "Load all" overlay visibility is driven by scroll-to-top in handleScroll;
-  // timers are cleared on session change via the reset effect above.
-
+  // Reached from a background-task chip whose launching row is on a page that
+  // was never loaded; the top "loading" pill shows while it runs.
   const loadAllMessages = useCallback(async () => {
     if (!isActive) return;
     if (!selectedSession || !selectedProject) return;
@@ -942,11 +868,6 @@ export function useChatSessionState({
     allMessagesLoadedRef.current = true;
     isLoadingMoreRef.current = true;
     setIsLoadingAllMessages(true);
-    setShowLoadAllOverlay(true);
-    if (loadAllOverlayTimerRef.current) {
-      clearTimeout(loadAllOverlayTimerRef.current);
-      loadAllOverlayTimerRef.current = null;
-    }
 
     try {
       const slot = await sessionStore.fetchFromServer(requestSessionId, {
@@ -962,25 +883,13 @@ export function useChatSessionState({
 
       if (slot) {
         setHasMoreMessages(false);
-        setTotalMessages(slot.total);
         messagesOffsetRef.current = slot.offset;
-        setAllMessagesLoaded(true);
-
-        setLoadAllJustFinished(true);
-        if (loadAllFinishedTimerRef.current) clearTimeout(loadAllFinishedTimerRef.current);
-        loadAllFinishedTimerRef.current = setTimeout(() => {
-          setLoadAllJustFinished(false);
-          setShowLoadAllOverlay(false);
-          loadAllFinishedTimerRef.current = null;
-        }, 2500);
       } else {
         allMessagesLoadedRef.current = false;
-        setShowLoadAllOverlay(false);
       }
     } catch (error) {
       console.error('Error loading all messages:', error);
       allMessagesLoadedRef.current = false;
-      setShowLoadAllOverlay(false);
     } finally {
       isLoadingMoreRef.current = false;
       setIsLoadingAllMessages(false);
@@ -1027,7 +936,6 @@ export function useChatSessionState({
     isLoadingSessionMessages,
     isLoadingMoreMessages,
     hasMoreMessages,
-    totalMessages,
     isUserScrolledUp,
     setIsUserScrolledUp,
     tokenBudget,
@@ -1039,10 +947,7 @@ export function useChatSessionState({
     revealMessage,
     loadAllMessages,
     loadFullTranscript,
-    allMessagesLoaded,
     isLoadingAllMessages,
-    loadAllJustFinished,
-    showLoadAllOverlay,
     createDiff,
     scrollContainerRef,
     scrollToBottom,

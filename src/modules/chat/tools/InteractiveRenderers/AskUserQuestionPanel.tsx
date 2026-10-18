@@ -7,6 +7,38 @@ import type { PermissionPanelProps,Question } from '@/shared/types';
  *  render by a fresh `[]` literal when a request carries no questions. */
 const NO_QUESTIONS: Question[] = [];
 
+/** What the user has filled in so far on one question request. */
+type QuestionDraft = {
+  currentStep: number;
+  selections: Map<number, Set<string>>;
+  otherTexts: Map<number, string>;
+  otherActive: Map<number, boolean>;
+};
+
+/** Drafts kept at most; the oldest is dropped first so abandoned requests cannot pile up. */
+const MAX_KEPT_DRAFTS = 20;
+
+/**
+ * Drafts by request id, kept outside the panel because the panel is unmounted
+ * whenever the user leaves the session or the prompt list is replaced
+ * (reconnect, session switch), and a half-answered multi-question prompt
+ * must be there again when they come back. Request ids are unique, so one
+ * store for the page cannot mix sessions up. Entries are removed once the
+ * answer is delivered.
+ */
+const questionDrafts = new Map<string, QuestionDraft>();
+
+function saveQuestionDraft(requestId: string, draft: QuestionDraft) {
+  // Re-inserting moves the entry to the newest position.
+  questionDrafts.delete(requestId);
+  questionDrafts.set(requestId, draft);
+  while (questionDrafts.size > MAX_KEPT_DRAFTS) {
+    const oldest = questionDrafts.keys().next().value;
+    if (oldest === undefined) break;
+    questionDrafts.delete(oldest);
+  }
+}
+
 /**
  * Registered by chat's PermissionRequestsBanner as the permission panel for
  * AskUserQuestion requests, so the user answers the model's questions inline.
@@ -19,11 +51,26 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
   const input = request.input as { questions?: Question[] } | undefined;
   const questions: Question[] = input?.questions ?? NO_QUESTIONS;
 
-  const [currentStep, setCurrentStep] = useState(0);
-  const [selections, setSelections] = useState<Map<number, Set<string>>>(() => new Map());
-  const [otherTexts, setOtherTexts] = useState<Map<number, string>>(() => new Map());
-  const [otherActive, setOtherActive] = useState<Map<number, boolean>>(() => new Map());
+  // Starting point of every field below: what was filled in before the panel was last unmounted.
+  const [savedDraft] = useState(() => questionDrafts.get(request.requestId));
+
+  // Which question the user is on; needed to resume where they stopped.
+  const [currentStep, setCurrentStep] = useState(savedDraft?.currentStep ?? 0);
+  // Chosen option labels per question; the answer is built from these.
+  const [selections, setSelections] = useState<Map<number, Set<string>>>(() => savedDraft?.selections ?? new Map());
+  // Free text typed under "Other" per question.
+  const [otherTexts, setOtherTexts] = useState<Map<number, string>>(() => savedDraft?.otherTexts ?? new Map());
+  // Whether "Other" is the chosen answer per question.
+  const [otherActive, setOtherActive] = useState<Map<number, boolean>>(() => savedDraft?.otherActive ?? new Map());
+  // Drives the enter animation only.
   const [mounted, setMounted] = useState(false);
+  // The last submit never reached the server (connection down), so the prompt stays and says so.
+  const [sendFailed, setSendFailed] = useState(false);
+
+  // Keep the draft current so unmounting at any moment loses nothing.
+  useEffect(() => {
+    saveQuestionDraft(request.requestId, { currentStep, selections, otherTexts, otherActive });
+  }, [request.requestId, currentStep, selections, otherTexts, otherActive]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const otherInputRef = useRef<HTMLInputElement>(null);
@@ -90,13 +137,22 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
     return answers;
   }, [questions, selections, otherActive, otherTexts]);
 
+  // The prompt is only dropped once the answer has actually been sent.
+  const sendAnswers = useCallback((answers: Record<string, string>) => {
+    const delivered = onDecision(request.requestId, { allow: true, updatedInput: { ...input, answers } });
+    setSendFailed(!delivered);
+    if (delivered) {
+      questionDrafts.delete(request.requestId);
+    }
+  }, [onDecision, request.requestId, input]);
+
   const handleSubmit = useCallback(() => {
-    onDecision(request.requestId, { allow: true, updatedInput: { ...input, answers: buildAnswers() } });
-  }, [onDecision, request.requestId, input, buildAnswers]);
+    sendAnswers(buildAnswers());
+  }, [sendAnswers, buildAnswers]);
 
   const handleSkip = useCallback(() => {
-    onDecision(request.requestId, { allow: true, updatedInput: { ...input, answers: {} } });
-  }, [onDecision, request.requestId, input]);
+    sendAnswers({});
+  }, [sendAnswers]);
 
   // Keyboard handler for number keys and navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -340,6 +396,12 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
             )}
           </div>
         </div>
+
+        {sendFailed && (
+          <p role="alert" className="px-4 pb-2 text-[11px] text-red-600 dark:text-red-400">
+            {t('chat:misc.answerNotSent')}
+          </p>
+        )}
 
         {/* Footer — compact */}
         <div className="flex items-center justify-between gap-2 border-t border-gray-100 bg-gray-50/50 px-4 py-2 dark:border-gray-700/50 dark:bg-gray-800/50">

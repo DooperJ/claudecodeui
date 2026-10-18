@@ -212,13 +212,8 @@
       "sessionMessages": "Loading session messages..."
     },
     "messages": {
-      "showingOf": "Showing {{shown}} of {{total}} messages",
-      "scrollToLoad": "Scroll up to load more",
       "showingLast": "Showing last {{count}} messages ({{total}} total)",
       "loadEarlier": "Load earlier messages",
-      "loadAll": "Load all messages",
-      "loadingAll": "Loading all messages...",
-      "allLoaded": "All messages loaded",
       "perfWarning": "All messages loaded — scrolling may be slower. Click \"Scroll to bottom\" to restore performance."
     }
   },
@@ -397,7 +392,9 @@
     "tokensLabel_one": "token",
     "tokensLabel_other": "tokens",
     "escClosesModal": "Esc closes the modal.",
-    "close": "Close"
+    "close": "Close",
+    "answerNotSent": "Your answer was not sent because the connection is down. It will stay here — try again once reconnected.",
+    "replyBelow": "Reply in the message box below"
   },
   "modelLibrary": {
     "effortLevels": "Reasoning levels",
