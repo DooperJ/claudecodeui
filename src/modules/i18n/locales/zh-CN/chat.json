@@ -145,7 +145,8 @@
       "willSend": "将在当前完成后发送",
       "edit": "编辑排队消息",
       "delete": "删除排队消息"
-    }
+    },
+    "notSentDisconnected": "未发送：与服务器的连接已断开。消息仍保留在输入框中，请在重新连接后再试。"
   },
   "providerSelection": {
     "title": "选择您的 AI 助手",
@@ -254,7 +255,10 @@
   "message": {
     "editAndResend": "编辑并重新发送",
     "forkFromHere": "从此处派生",
-    "answeredBy": "由 {{model}} 回答"
+    "answeredBy": "由 {{model}} 回答",
+    "sending": "发送中…",
+    "notDelivered": "未送达",
+    "retry": "重试"
   },
   "composer": {
     "editing": {

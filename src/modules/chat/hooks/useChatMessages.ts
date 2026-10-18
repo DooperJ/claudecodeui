@@ -431,6 +431,10 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
               timestamp: msg.timestamp,
               images,
               files,
+              // Only rows that went through the send round trip carry a
+              // client id (`local_<id>`) and a delivery state.
+              clientMessageId: msg.id.startsWith('local_') ? msg.id.slice('local_'.length) : undefined,
+              deliveryStatus: msg.deliveryStatus,
               ...sharedMetadata,
             });
           }

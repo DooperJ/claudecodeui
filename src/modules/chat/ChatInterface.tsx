@@ -8,6 +8,8 @@ import { useWebSocket } from '@/shared/context/WebSocketContext';
 import PermissionContext from '@/modules/chat/context/PermissionContext';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 import { TranscriptSessionContext } from '@/modules/chat/context/TranscriptSessionContext';
+import { MessageDeliveryContext } from '@/modules/chat/context/MessageDeliveryContext';
+import { useMessageDelivery } from '@/modules/chat/hooks/useMessageDelivery';
 import { api } from '@/shared/api';
 import type {
   ChatMessage,
@@ -37,7 +39,7 @@ type ChatInterfaceProps = {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean;
   onFileOpen?: (filePath: string, diffInfo?: any) => void;
   onNavigateToSession?: (targetSessionId: string, options?: SessionNavigationOptions) => void;
   onSessionEstablished?: (sessionId: string, context: SessionEstablishedContext) => void;
@@ -189,6 +191,17 @@ function ChatInterface({
     onNavigateToSession?.(sessionId);
   }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
 
+  // Follows each sent message to the server's acknowledgement; the composer
+  // registers sends here and a transcript row's retry button resends through it.
+  const { trackSend, retrySend } = useMessageDelivery({
+    subscribe,
+    sendMessage,
+    sessionStore,
+    onSessionProcessing,
+    onSessionIdle,
+  });
+  const messageDeliveryValue = useMemo(() => ({ retrySend }), [retrySend]);
+
   const {
     input,
     setInput,
@@ -255,6 +268,7 @@ function ChatInterface({
     canAbortSession,
     tokenBudget,
     sendMessage,
+    trackSend,
     sendByCtrlEnter,
     onSessionProcessing,
     onSessionEstablished: handleSessionEstablished,
@@ -476,6 +490,7 @@ function ChatInterface({
       <div className="flex h-full min-h-0 flex-col">
         <MarkdownWorkspaceContext.Provider value={markdownWorkspaceValue}>
           <TranscriptSessionContext.Provider value={transcriptSessionValue}>
+            <MessageDeliveryContext.Provider value={messageDeliveryValue}>
             <ChatMessagesPane
               scrollContainerRef={scrollContainerRef}
               listRef={listRef}
@@ -535,6 +550,7 @@ function ChatInterface({
               onForkFromMessage={supportsSessionForking ? handleForkFromMessage : undefined}
               onLoadFullTranscript={loadFullTranscript}
             />
+            </MessageDeliveryContext.Provider>
           </TranscriptSessionContext.Provider>
         </MarkdownWorkspaceContext.Provider>
 

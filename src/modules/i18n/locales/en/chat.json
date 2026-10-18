@@ -158,7 +158,8 @@
       "willSend": "Will send when this finishes",
       "edit": "Edit queued message",
       "delete": "Delete queued message"
-    }
+    },
+    "notSentDisconnected": "Not sent: the connection to the server is down. Your message is still in the box — try again once it reconnects."
   },
   "composer": {
     "reasoning": "Reasoning",
@@ -302,7 +303,10 @@
   "message": {
     "editAndResend": "Edit and resend",
     "forkFromHere": "Fork from here",
-    "answeredBy": "Answered by {{model}}"
+    "answeredBy": "Answered by {{model}}",
+    "sending": "Sending…",
+    "notDelivered": "Not delivered",
+    "retry": "Retry"
   },
   "export": {
     "trigger": "Export conversation",

@@ -754,10 +754,40 @@ export function useSessionStore() {
       msg.sessionId === sessionId
         ? msg
         : { ...msg, sessionId };
+    // The sender already shows its own optimistic row for a message; the
+    // server's copy of the same user turn (same id) must not add a second one.
+    // A replayed copy on a page that lacks the row is not a duplicate and is kept.
+    if (
+      normalizedMessage.kind === 'text'
+      && normalizedMessage.role === 'user'
+      && slot.realtimeMessages.some((existing) => existing.id === normalizedMessage.id)
+    ) {
+      return;
+    }
     let updated = [...slot.realtimeMessages, normalizedMessage];
     if (updated.length > MAX_REALTIME_MESSAGES) {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
     }
+    slot.realtimeMessages = updated;
+    recomputeMergedIfNeeded(slot);
+    notify(sessionId);
+  }, [getSlot, notify]);
+
+  /**
+   * Changes fields of one live row in place (today: a sent message's delivery
+   * status). Does nothing when the row is gone, for example after a truncation.
+   */
+  const patchRealtimeMessage = useCallback((
+    sessionId: string,
+    messageId: string,
+    patch: Partial<NormalizedMessage>,
+  ) => {
+    const slot = getSlot(sessionId);
+    const index = slot.realtimeMessages.findIndex((message) => message.id === messageId);
+    if (index < 0) return;
+
+    const updated = [...slot.realtimeMessages];
+    updated[index] = { ...updated[index], ...patch };
     slot.realtimeMessages = updated;
     recomputeMergedIfNeeded(slot);
     notify(sessionId);
@@ -870,6 +900,7 @@ export function useSessionStore() {
     fetchFromServer,
     fetchMore,
     appendRealtime,
+    patchRealtimeMessage,
     truncateAt,
     refreshLatestFromServer,
     setActiveSession,
@@ -879,7 +910,7 @@ export function useSessionStore() {
     getMessages,
     getSessionSlot,
   }), [
-    fetchFromServer, fetchMore, appendRealtime, truncateAt, refreshLatestFromServer,
+    fetchFromServer, fetchMore, appendRealtime, patchRealtimeMessage, truncateAt, refreshLatestFromServer,
     setActiveSession, isStale, updateStreaming, finalizeStreaming,
     getMessages, getSessionSlot,
   ]);

@@ -50,7 +50,9 @@ type UseChatComposerStateArgs = {
   processingSessions?: SessionActivityMap;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean;
+  /** Starts following a frame that was just written to the socket until the server acknowledges it. */
+  trackSend: (frame: Record<string, unknown>, sessionId: string) => void;
   sendByCtrlEnter?: boolean;
   onSessionProcessing?: MarkSessionProcessing;
   /**
@@ -96,6 +98,18 @@ type SubmitOptions = {
    * run that command instead of being sent.
    */
   skipCommandInterception?: boolean;
+};
+
+/**
+ * A fresh id for one sent message. It travels to the server, comes back in the
+ * acknowledgement, and names the transcript row (`local_<id>`), so it uses only
+ * characters the server accepts.
+ */
+const createClientMessageId = (): string => {
+  const random = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+  return `cm-${random}`;
 };
 
 const createFakeSubmitEvent = () => {
@@ -192,6 +206,7 @@ export function useChatComposerState({
   canAbortSession,
   tokenBudget,
   sendMessage,
+  trackSend,
   sendByCtrlEnter,
   onSessionProcessing,
   onSessionEstablished,
@@ -956,6 +971,46 @@ export function useChatComposerState({
         }
       }
 
+      // One message shape for every provider. The backend resolves the
+      // provider, project path, and provider-native resume id from the
+      // session row; `options` only carries composer-level preferences.
+      const clientMessageId = createClientMessageId();
+      const sendFrame = {
+        // Replacing an already-sent message is its own frame: it changes the
+        // shape of the conversation, so it gets validated separately and can
+        // report why it was refused.
+        type: editingAnchorId ? 'chat.edit-send' : 'chat.send',
+        sessionId: targetSessionId,
+        // The server acknowledges this id and records the message under it, so
+        // a send that never arrives is told apart from a reply that is slow,
+        // and a resend cannot start a second turn.
+        clientMessageId,
+        ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
+        content: messageContent,
+        options: {
+          ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
+          attachments: uploadedAttachments,
+        },
+      };
+
+      // Nothing is shown as sent unless the frame reached an open socket. A
+      // dropped connection used to swallow the message while the transcript
+      // already displayed it and the spinner ran; now the text stays in the
+      // composer and the user is told.
+      if (!sendMessage(sendFrame)) {
+        if (queuedSubmission) {
+          queuedDraftSessionRef.current = sessionKey;
+          setQueuedDraft(queuedSubmission);
+        }
+        addMessage({
+          type: 'error',
+          content: t('input.notSentDisconnected'),
+          timestamp: new Date(),
+        });
+        return;
+      }
+      trackSend(sendFrame, targetSessionId);
+
       const attachmentRecords = uploadedAttachments as ChatAttachment[];
       const userMessage: ChatMessage = {
         type: 'user',
@@ -963,9 +1018,11 @@ export function useChatComposerState({
         images: attachmentRecords.filter(isImageAttachment),
         files: attachmentRecords.filter((attachment) => !isImageAttachment(attachment)),
         timestamp: new Date(),
+        clientMessageId,
+        deliveryStatus: 'sending',
         // Tags this echo as the replacement, so the truncation the server
         // broadcasts a moment later cuts the turns being replaced without
-        // taking the message the user just sent with them.
+        // taking the message the user just sent with it.
         ...(editingAnchorId ? { replacesAnchorId: editingAnchorId } : {}),
       };
 
@@ -980,23 +1037,6 @@ export function useChatComposerState({
 
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);
-
-      // One message shape for every provider. The backend resolves the
-      // provider, project path, and provider-native resume id from the
-      // session row; `options` only carries composer-level preferences.
-      sendMessage({
-        // Replacing an already-sent message is its own frame: it changes the
-        // shape of the conversation, so it gets validated separately and can
-        // report why it was refused.
-        type: editingAnchorId ? 'chat.edit-send' : 'chat.send',
-        sessionId: targetSessionId,
-        ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
-        content: messageContent,
-        options: {
-          ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
-          attachments: uploadedAttachments,
-        },
-      });
       setEditingAnchorId(null);
 
       // Recorded under the (possibly just-allocated) session id, so the first
@@ -1037,6 +1077,7 @@ export function useChatComposerState({
       scrollToBottom,
       selectedProject,
       sendMessage,
+      trackSend,
       sessionKey,
       addMessage,
       setIsUserScrolledUp,

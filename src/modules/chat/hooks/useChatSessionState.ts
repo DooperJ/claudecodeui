@@ -105,7 +105,11 @@ function chatMessageToNormalized(
   sessionId: string,
   provider: LLMProvider,
 ): NormalizedMessage | null {
-  const id = `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  // A sent message keeps the id the server will echo it under, so the server's
+  // copy of the same turn folds into this row instead of adding a second one.
+  const id = msg.clientMessageId
+    ? `local_${msg.clientMessageId}`
+    : `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const ts = msg.timestamp instanceof Date
     ? msg.timestamp.toISOString()
     : typeof msg.timestamp === 'number'
@@ -148,6 +152,7 @@ function chatMessageToNormalized(
     // Survives the truncation that follows an edit, which clears every other
     // live row.
     replacesAnchorId: msg.replacesAnchorId,
+    deliveryStatus: msg.deliveryStatus,
   } as NormalizedMessage;
 }
 

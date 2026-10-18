@@ -18,7 +18,12 @@ type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 
 type WebSocketContextType = {
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  /**
+   * Writes one frame to the socket. Returns `true` only when the frame was
+   * handed to an open socket; `false` means nothing was sent, so the caller
+   * must not present the action as done.
+   */
+  sendMessage: (message: unknown) => boolean;
   /**
    * Subscribes to every websocket frame. Returns an unsubscribe function.
    *
@@ -38,6 +43,13 @@ type WebSocketContextType = {
    */
   connectionStatus: ConnectionStatus;
 };
+
+/**
+ * How long a hidden page may be away before its socket is replaced on return.
+ * Short absences keep the socket (switching tabs briefly must not churn the
+ * connection); longer ones are where mobile browsers silently drop it.
+ */
+const BACKGROUND_SOCKET_DISTRUST_MS = 15_000;
 
 const WebSocketContext = createContext<WebSocketContextType | null>(null);
 
@@ -185,14 +197,89 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     };
   }, [connect, isAuthLoading, user]); // reconnect after authentication or token refresh
 
-  const sendMessage = useCallback((message: unknown) => {
+  const sendMessage = useCallback((message: unknown): boolean => {
     const socket = wsRef.current;
     if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(message));
-    } else {
-      console.warn('WebSocket not connected');
+      try {
+        socket.send(JSON.stringify(message));
+        return true;
+      } catch (error) {
+        console.warn('WebSocket send failed', error);
+        return false;
+      }
     }
+    console.warn('WebSocket not connected');
+    return false;
   }, []);
+
+  // When the page was last hidden. A phone or Safari tab that spent time in the
+  // background often keeps a socket that still reads OPEN but no longer
+  // delivers anything; coming back after a long absence replaces it instead of
+  // trusting it.
+  const hiddenAtRef = useRef<number | null>(null);
+
+  const reconnectNow = useCallback(() => {
+    if (unmountedRef.current) return;
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    const active = wsRef.current;
+    if (active) {
+      // Same detach-then-close as a token refresh, so the close does not
+      // schedule a second reconnect behind this one.
+      active.onopen = null;
+      active.onmessage = null;
+      active.onclose = null;
+      active.onerror = null;
+      active.close();
+      wsRef.current = null;
+      setConnectionStatus('connecting');
+    }
+    connect();
+  }, [connect]);
+
+  useEffect(() => {
+    const handleReturn = () => {
+      const socket = wsRef.current;
+      const hiddenFor = hiddenAtRef.current === null ? 0 : Date.now() - hiddenAtRef.current;
+      hiddenAtRef.current = null;
+      // A handshake already under way is the reconnect.
+      if (socket?.readyState === WebSocket.CONNECTING) return;
+      const isOpen = socket?.readyState === WebSocket.OPEN;
+      if (!isOpen || hiddenFor >= BACKGROUND_SOCKET_DISTRUST_MS) {
+        reconnectNow();
+      }
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAtRef.current = Date.now();
+        return;
+      }
+      handleReturn();
+    };
+    const handlePageShow = (event: PageTransitionEvent) => {
+      // A page restored from the back/forward cache comes back with a dead socket.
+      if (event.persisted) {
+        reconnectNow();
+      }
+    };
+    const handleOnline = () => {
+      if (wsRef.current?.readyState !== WebSocket.OPEN) {
+        reconnectNow();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('pageshow', handlePageShow);
+    window.addEventListener('online', handleOnline);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('pageshow', handlePageShow);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [reconnectNow]);
 
   const subscribe = useCallback((listener: ServerEventListener) => {
     listenersRef.current.add(listener);

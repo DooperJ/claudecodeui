@@ -197,6 +197,11 @@ export function useChatRealtimeHandlers({
         case 'loading_progress':
           return;
 
+        // The server's receipt for a sent message; useMessageDelivery follows
+        // it. It is not a transcript row and must not reach the store.
+        case 'chat_accepted':
+          return;
+
         default:
           break;
       }

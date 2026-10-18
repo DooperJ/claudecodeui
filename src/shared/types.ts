@@ -302,8 +302,8 @@ export type SessionActivitySnapshot = {
 /**
  * One frame received from the chat websocket. The server guarantees every
  * frame carries a `kind` (provider message kinds plus gateway kinds such as
- * `chat_subscribed`, `session_upserted`, `loading_progress`,
- * `protocol_error`). The synthetic `websocket_reconnected` kind is injected
+ * `chat_subscribed`, `chat_accepted`, `session_upserted`,
+ * `loading_progress`, `protocol_error`). The synthetic `websocket_reconnected` kind is injected
  * client-side when the socket re-opens after a drop.
  */
 export type ServerEvent = {
@@ -420,6 +420,18 @@ export type ChatMessage = {
    * already-sent one, naming the anchor it replaces. Local to this client.
    */
   replacesAnchorId?: string;
+  /**
+   * Identifies a user message across the send round trip: the browser creates
+   * it, the server echoes it back in `chat_accepted` and in the run's user
+   * event. Present only on rows this client (or a replayed run event) created.
+   */
+  clientMessageId?: string;
+  /**
+   * Where a just-sent user message stands. `sending` until the server confirms
+   * it took the message; `failed` when it did not, so the row offers a retry.
+   * Absent once delivered, and on every row loaded from the transcript.
+   */
+  deliveryStatus?: 'sending' | 'failed';
   /**
    * The model that produced this assistant turn, as the provider reported it
    * on the transcript row. Absent on user turns and on rows the provider
@@ -546,14 +558,17 @@ export type NormalizedMessage = {
    */
   transcriptAnchorId?: string;
   /**
-   * Set only on the client-side optimistic echo of an edited message, naming
-   * the anchor that echo replaces. Never sent by the backend.
+   * Set only on the echo of an edited message (the browser's own optimistic
+   * row, or the run's user event replayed from the server), naming the anchor
+   * that echo replaces.
    *
    * The truncation that follows an edit clears every live row, because they
    * belonged to the turn being replaced. This tag is what tells the store the
    * replacement itself is not one of them.
    */
   replacesAnchorId?: string;
+  /** Delivery state of a just-sent user row; see `ChatMessage.deliveryStatus`. Client-side only. */
+  deliveryStatus?: 'sending' | 'failed';
   /**
    * How many persisted rows survived the cut this echo was sent for, stamped
    * when the truncation is applied.
@@ -1355,7 +1370,7 @@ export type WizardFormState = {
 /** The shared WebSocket connection and its send function, threaded through the workspace tree so descendants can exchange live session messages. */
 export type RealtimeProps = {
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean;
 };
 
 /** Everything the project workspace shell and its regions need from the route: the realtime connection plus the current viewport mode and the router's navigate function. */

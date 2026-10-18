@@ -15,6 +15,7 @@ import MessageCopyControl from '@/modules/chat/transcript/MessageCopyControl';
 import MessageModelLabel from '@/modules/chat/transcript/MessageModelLabel';
 import MessageSpeakControl from '@/modules/chat/transcript/MessageSpeakControl';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
+import { useRetryMessage } from '@/modules/chat/context/MessageDeliveryContext';
 import { MemoryCitations } from '@/modules/chat/transcript/MemoryCitations';
 
 type MessageComponentProps = {
@@ -41,6 +42,43 @@ type MessageComponentProps = {
   onForkFromMessage?: (message: ChatMessage) => void;
 };
 
+/**
+ * Under a user message that has not been confirmed by the server: "Sending…"
+ * while the acknowledgement is awaited, and a retry once it is known not to
+ * have arrived. Nothing for a delivered message or one loaded from history.
+ */
+function DeliveryStatusLine({
+  message,
+  retryMessage,
+}: {
+  message: ChatMessage;
+  retryMessage: ((clientMessageId: string) => boolean) | null;
+}) {
+  const { t } = useTranslation('chat');
+  if (!message.deliveryStatus) {
+    return null;
+  }
+
+  if (message.deliveryStatus === 'sending') {
+    return <div className="mt-1 text-right text-xs text-muted-foreground">{t('message.sending')}</div>;
+  }
+
+  return (
+    <div role="alert" className="mt-1 flex items-center justify-end gap-2 text-xs text-red-600 dark:text-red-400">
+      <span>{t('message.notDelivered')}</span>
+      {retryMessage && message.clientMessageId && (
+        <button
+          type="button"
+          onClick={() => retryMessage(message.clientMessageId as string)}
+          className="rounded px-1.5 py-0.5 font-medium underline hover:bg-red-500/10"
+        >
+          {t('message.retry')}
+        </button>
+      )}
+    </div>
+  );
+}
+
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
 /**
@@ -55,6 +93,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
       (prevMessage.type === 'tool') ||
       (prevMessage.type === 'error'));
   const messageRef = useRef<HTMLDivElement | null>(null);
+  const retryMessage = useRetryMessage();
   const userCopyContent = String(message.content || '');
   const formattedMessageContent = useMemo(
     () => {
@@ -148,11 +187,15 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   )}
                   <span>{formattedTime}</span>
                 </div>
+                <DeliveryStatusLine message={message} retryMessage={retryMessage} />
               </div>
             ) : (
               /* Attachment-only turn: no text bubble, but the timestamp still shows */
-              <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
-                <span>{formattedTime}</span>
+              <div className="flex flex-col items-end gap-1">
+                <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
+                  <span>{formattedTime}</span>
+                </div>
+                <DeliveryStatusLine message={message} retryMessage={retryMessage} />
               </div>
             )}
           </div>
