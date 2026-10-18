@@ -60,6 +60,17 @@ const MAX_BUFFERED_EVENTS_PER_RUN = 5000;
 const runs = new Map<string, ChatRun>();
 
 /**
+ * How many accepted client message ids are remembered. A retried `chat.send`
+ * carries the id it was first sent with, so remembering recent ids lets the
+ * server answer a retry with the original acknowledgement instead of running
+ * the turn twice. Bounded so a long-lived server does not grow without limit.
+ */
+const MAX_REMEMBERED_CLIENT_MESSAGES = 1000;
+
+/** Accepted client message ids keyed `${appSessionId}:${clientMessageId}`, oldest first. */
+const acceptedClientMessages = new Set<string>();
+
+/**
  * Answers whether a completed run must stay registered a while longer. Set by
  * the composition root to the provider runtimes' background-work check: a
  * session whose turn ended but whose agents, workflows or commands are still
@@ -271,6 +282,25 @@ export const chatRunRegistry = {
   },
 
   /**
+   * Remembers that a client message was accepted for a session, so a retry of
+   * the same `chat.send` is acknowledged without starting a second turn.
+   */
+  rememberAcceptedClientMessage(appSessionId: string, clientMessageId: string): void {
+    acceptedClientMessages.add(`${appSessionId}:${clientMessageId}`);
+    if (acceptedClientMessages.size > MAX_REMEMBERED_CLIENT_MESSAGES) {
+      const oldest = acceptedClientMessages.values().next().value;
+      if (oldest !== undefined) {
+        acceptedClientMessages.delete(oldest);
+      }
+    }
+  },
+
+  /** Whether this client message id was already accepted for the session. */
+  hasAcceptedClientMessage(appSessionId: string, clientMessageId: string): boolean {
+    return acceptedClientMessages.has(`${appSessionId}:${clientMessageId}`);
+  },
+
+  /**
    * Adds a websocket connection to a run's live audience.
    *
    * This is the generic replacement for the Claude-only writer reconnect:
@@ -343,5 +373,6 @@ export const chatRunRegistry = {
    */
   clearAll(): void {
     runs.clear();
+    acceptedClientMessages.clear();
   },
 };

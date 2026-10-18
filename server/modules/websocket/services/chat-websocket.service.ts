@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import type { WebSocket } from 'ws';
@@ -125,20 +126,98 @@ function sendProtocolError(
   ws: WebSocket,
   code: string,
   error: string,
-  sessionId?: string
+  sessionId?: string,
+  clientMessageId?: string | null,
 ): void {
   sendJson(ws, {
     kind: 'protocol_error',
     code,
     error,
     sessionId: sessionId ?? null,
+    // Lets the sender mark that one message as not delivered instead of
+    // guessing which of its pending sends this refusal belongs to.
+    ...(clientMessageId ? { clientMessageId } : {}),
     timestamp: new Date().toISOString(),
   });
+}
+
+/**
+ * Longest `clientMessageId` accepted. The id is chosen by the browser and is
+ * echoed into events and remembered for retries, so it is kept short and plain.
+ */
+const MAX_CLIENT_MESSAGE_ID_LENGTH = 100;
+const CLIENT_MESSAGE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Reads the idempotency id a client attaches to `chat.send` / `chat.edit-send`.
+ * Absent or malformed ids yield null, which keeps older clients working: they
+ * simply get no acknowledgement and no server-side user echo.
+ */
+function readClientMessageId(data: AnyRecord): string | null {
+  const raw = typeof data.clientMessageId === 'string' ? data.clientMessageId.trim() : '';
+  return raw.length > 0
+    && raw.length <= MAX_CLIENT_MESSAGE_ID_LENGTH
+    && CLIENT_MESSAGE_ID_PATTERN.test(raw)
+    ? raw
+    : null;
 }
 
 function readRequiredSessionId(data: AnyRecord): string | null {
   const sessionId = typeof data.sessionId === 'string' ? data.sessionId.trim() : '';
   return sessionId.length > 0 ? sessionId : null;
+}
+
+/**
+ * Acknowledges that the server accepted a message and owns the turn.
+ * `duplicate` marks the answer to a retry of an already-accepted message.
+ */
+function buildChatAcceptedFrame(sessionId: string, clientMessageId: string, duplicate: boolean) {
+  return {
+    kind: 'chat_accepted',
+    sessionId,
+    clientMessageId,
+    duplicate,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/**
+ * Records the user's message as a sequenced event of the run.
+ *
+ * Its id is the one the sending browser gave its own optimistic row
+ * (`local_<clientMessageId>`), so that browser folds the two together, while
+ * any other client — a second tab, a refreshed page — receives the message as
+ * a regular event and reconciles it against the transcript the same way it
+ * reconciles its own optimistic rows.
+ */
+function emitUserMessageEvent(
+  run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>,
+  input: {
+    clientMessageId: string | null;
+    content: string;
+    attachments: ChatAttachmentDescriptor[];
+    replacesAnchorId: string;
+  },
+): void {
+  if (!input.clientMessageId) {
+    return;
+  }
+
+  const images = input.attachments.filter(isImageAttachmentDescriptor);
+  const files = input.attachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor));
+
+  run.writer.send({
+    id: `local_${input.clientMessageId}`,
+    kind: 'text',
+    role: 'user',
+    provider: run.provider,
+    sessionId: run.appSessionId,
+    timestamp: new Date().toISOString(),
+    content: input.content,
+    ...(images.length > 0 ? { images } : {}),
+    ...(files.length > 0 ? { files } : {}),
+    ...(input.replacesAnchorId ? { replacesAnchorId: input.replacesAnchorId } : {}),
+  });
 }
 
 /**
@@ -176,9 +255,10 @@ function resolveSendTarget(
   dependencies: ChatWebSocketDependencies,
   frameName: string,
 ): ResolvedSendTarget | null {
+  const clientMessageId = readClientMessageId(data);
   const sessionId = readRequiredSessionId(data);
   if (!sessionId) {
-    sendProtocolError(ws, 'SESSION_ID_REQUIRED', `${frameName} requires a sessionId.`);
+    sendProtocolError(ws, 'SESSION_ID_REQUIRED', `${frameName} requires a sessionId.`, undefined, clientMessageId);
     return null;
   }
 
@@ -188,14 +268,15 @@ function resolveSendTarget(
       ws,
       'SESSION_NOT_FOUND',
       `Session "${sessionId}" was not found. Create it via POST /api/providers/sessions first.`,
-      sessionId
+      sessionId,
+      clientMessageId,
     );
     return null;
   }
 
   const provider = session.provider as LLMProvider;
   if (!dependencies.runtime.hasRuntime(provider)) {
-    sendProtocolError(ws, 'UNSUPPORTED_PROVIDER', `Provider "${provider}" is not available.`, sessionId);
+    sendProtocolError(ws, 'UNSUPPORTED_PROVIDER', `Provider "${provider}" is not available.`, sessionId, clientMessageId);
     return null;
   }
 
@@ -219,6 +300,17 @@ async function dispatchRun(
   beforeRun?: (run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>) => void | Promise<void>,
 ): Promise<{ started: boolean; error: string | null }> {
   const provider = session.provider as LLMProvider;
+  const clientMessageId = readClientMessageId(data);
+
+  // A retry of a message the server already took (the first acknowledgement
+  // was lost with the connection) is answered again, never run a second time.
+  if (clientMessageId && chatRunRegistry.hasAcceptedClientMessage(sessionId, clientMessageId)) {
+    if (ws) {
+      chatRunRegistry.attachConnection(sessionId, ws);
+      sendJson(ws, buildChatAcceptedFrame(sessionId, clientMessageId, true));
+    }
+    return { started: false, error: null };
+  }
 
   const run = chatRunRegistry.startRun({
     appSessionId: sessionId,
@@ -234,10 +326,20 @@ async function dispatchRun(
         ws,
         'RUN_IN_PROGRESS',
         `Session "${sessionId}" already has a run in progress.`,
-        sessionId
+        sessionId,
+        clientMessageId,
       );
     }
     return { started: false, error: 'A run is already in progress for this session.' };
+  }
+
+  // The server has the message and a run is reserved for it; from here the
+  // turn is the server's, whatever happens to this socket.
+  if (clientMessageId) {
+    chatRunRegistry.rememberAcceptedClientMessage(sessionId, clientMessageId);
+    if (ws) {
+      sendJson(ws, buildChatAcceptedFrame(sessionId, clientMessageId, false));
+    }
   }
 
   const clientOptions = (data.options ?? {}) as AnyRecord;
@@ -289,6 +391,16 @@ async function dispatchRun(
     // be taken back. Inside the try so a rewind that throws still releases the
     // run instead of leaving the session processing forever.
     await beforeRun?.(run);
+    // Recorded as the run's first event, after an edit has announced its
+    // truncation. The transcript only has this message once the provider CLI
+    // has written it, a few seconds in; as an event it is replayed to a page
+    // refreshed or reconnected in the meantime.
+    emitUserMessageEvent(run, {
+      clientMessageId: clientMessageId ?? (ws ? null : `srv-${randomUUID()}`),
+      content: command,
+      attachments: uniqueAttachments,
+      replacesAnchorId: typeof data.anchorId === 'string' ? data.anchorId.trim() : '',
+    });
     await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
@@ -326,9 +438,10 @@ async function handleChatEditSend(
   }
 
   const { sessionId, session, provider } = resolved;
+  const clientMessageId = readClientMessageId(data);
   const anchorId = typeof data.anchorId === 'string' ? data.anchorId.trim() : '';
   if (!anchorId) {
-    sendProtocolError(ws, 'ANCHOR_REQUIRED', 'chat.edit-send requires the anchorId of the message being replaced.', sessionId);
+    sendProtocolError(ws, 'ANCHOR_REQUIRED', 'chat.edit-send requires the anchorId of the message being replaced.', sessionId, clientMessageId);
     return;
   }
 
@@ -340,18 +453,19 @@ async function handleChatEditSend(
         ws,
         'EDIT_NOT_SUPPORTED',
         `Provider "${provider}" cannot replace an already-sent message.`,
-        sessionId
+        sessionId,
+        clientMessageId,
       );
       return;
     }
     if (!anchor.found) {
-      sendProtocolError(ws, 'ANCHOR_NOT_FOUND', 'That message is no longer in the transcript.', sessionId);
+      sendProtocolError(ws, 'ANCHOR_NOT_FOUND', 'That message is no longer in the transcript.', sessionId, clientMessageId);
       return;
     }
     resumeThroughId = anchor.resumeThroughId;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    sendProtocolError(ws, 'ANCHOR_LOOKUP_FAILED', `Could not read the transcript: ${message}`, sessionId);
+    sendProtocolError(ws, 'ANCHOR_LOOKUP_FAILED', `Could not read the transcript: ${message}`, sessionId, clientMessageId);
     return;
   }
 
@@ -400,7 +514,7 @@ async function handleChatEditSend(
           await sessionsService.rewindSessionForEdit(sessionId, resumeThroughId);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          sendProtocolError(ws, 'EDIT_REWIND_FAILED', `Could not rewind the conversation: ${message}`, sessionId);
+          sendProtocolError(ws, 'EDIT_REWIND_FAILED', `Could not rewind the conversation: ${message}`, sessionId, readClientMessageId(data));
           // Ends the run before the provider is asked to continue a
           // conversation that was not rewound after all.
           throw error;
@@ -578,7 +692,10 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
  * Handles authenticated chat websocket messages used by the main chat panel.
  *
  * Inbound protocol (client to server):
- * - `chat.send`                { sessionId, content, options? }
+ * - `chat.send`                { sessionId, content, clientMessageId?, options? }
+ *   The server answers an accepted message with `chat_accepted` and records
+ *   it as the run's first event; a refused one gets a `protocol_error` that
+ *   carries the same `clientMessageId`. Resending an accepted id is safe.
  * - `chat.abort`               { sessionId }
  * - `chat.stop-task`           { sessionId, taskId }
  * - `chat.subscribe`           { sessions: [{ sessionId, lastSeq? }] }

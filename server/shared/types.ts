@@ -315,6 +315,7 @@ export type MessageKind =
  */
 export type GatewayEventKind =
   | 'chat_subscribed'
+  | 'chat_accepted'
   | 'session_upserted'
   | 'loading_progress'
   | 'protocol_error';
